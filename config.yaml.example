@@ -1,0 +1,30 @@
+gmail:
+  credentials_path: "./credentials.json"
+  token_path: "./token.json"
+  check_interval_minutes: 5
+
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY_HERE"
+  model: "gemini-2.5-flash"
+  # 無料枠あり。将来的にgemini-3-flashが無料化されたら切り替え推奨
+
+telegram:
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+  chat_id: "YOUR_TELEGRAM_CHAT_ID_HERE"
+
+daily_summary:
+  send_time: "08:00"  # 日次ブリーフィングの送信時刻（HH:MM、JST）
+
+quiet_hours:
+  enabled: true
+  start: "00:00"
+  end: "07:00"
+
+discord:
+  bot_token: "YOUR_DISCORD_BOT_TOKEN_HERE"
+  monitored_channels:
+    - server_name: "YOUR_SERVER_NAME_HERE"
+      channel_ids: []   # 空リストなら全チャンネル監視
+  dm_monitoring: true
+  summary_interval_minutes: 360
+  mention_instant_notify: true

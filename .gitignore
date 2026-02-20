@@ -1,0 +1,22 @@
+# 認証情報・APIキー
+config.yaml
+credentials.json
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# セッション・ログ
+sessions/
+logs/
+
+# 個人データ（公開リポジトリに含めない）
+MEMORY.md
+STATE.md
+contacts.md
+.claude/
