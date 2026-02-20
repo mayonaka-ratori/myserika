@@ -11,10 +11,12 @@ daily_summary.py
 4. 再認証後は Calendar の予定が日次ブリーフィングに表示されるようになる
 """
 
+import html
 import logging
 from datetime import datetime, timedelta, timezone
 
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton
+from classifier import extract_email_address
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,109 @@ def get_today_events(calendar_service) -> list[dict] | None:
     except Exception as e:
         logger.error(f"Google Calendar 取得エラー: {e}")
         return None
+
+
+def _format_attendees(attendees: list[str], contacts: dict, max_display: int = 3) -> str:
+    """
+    参加者メールアドレスリストを表示用テキストにフォーマットする内部ヘルパー。
+    contacts に登録済みなら名前を、未登録なら「外部：email」形式で表示する。
+    例: （田中、外部：user@example.com）
+    """
+    if not attendees:
+        return ""
+
+    parts = []
+    for email in attendees[:max_display]:
+        if email in contacts:
+            name = contacts[email].get("name") or email.split("@")[0]
+            parts.append(html.escape(name))
+        else:
+            parts.append(f"外部：{html.escape(email)}")
+
+    remaining = len(attendees) - max_display
+    if remaining > 0:
+        parts.append(f"他{remaining}名")
+
+    return "（" + "、".join(parts) + "）"
+
+
+def _format_calendar_section(
+    events: list[dict] | None,
+    contacts: dict,
+) -> list[str]:
+    """
+    CalendarClient.get_today_events() の戻り値をブリーフィング行リストに変換する。
+    events=None（取得失敗）→ 「取得できませんでした」
+    events=[]（予定なし） → 「予定なし」
+    それ以外 → セパレーター + 「HH:MM-HH:MM タイトル（参加者）」行を返す
+    """
+    if events is None:
+        return ["・取得できませんでした"]
+    if not events:
+        return ["・予定なし"]
+
+    lines = ["─────────────"]
+    for ev in events:
+        if ev["is_all_day"]:
+            time_str = "終日"
+        elif ev["start"] and ev["end"]:
+            time_str = (
+                f"{ev['start'].strftime('%H:%M')}-{ev['end'].strftime('%H:%M')}"
+            )
+        else:
+            time_str = "時刻不明"
+
+        attendees_str = _format_attendees(ev["attendees"], contacts)
+        lines.append(f"{time_str} {html.escape(ev['title'])}{attendees_str}")
+
+    return lines
+
+
+def _format_related_emails_section(
+    pending_approvals: dict,
+    today_events: list[dict],
+    contacts: dict,
+) -> list[str]:
+    """
+    今日の会議参加者からの未返信メールを検出してセクション行リストを返す。
+    - pending_approvals の送信者メールと today_events の attendees を照合する
+    - 一致がなければ空リストを返す（セクション自体を省略）
+    """
+    # 非終日イベントから attendee_email → 開始時刻 のマッピングを構築
+    attendee_to_time: dict[str, str] = {}
+    for ev in today_events:
+        if ev["is_all_day"]:
+            continue
+        time_str = ev["start"].strftime("%H:%M") if ev["start"] else "?"
+        for email in ev["attendees"]:
+            if email not in attendee_to_time:
+                attendee_to_time[email] = time_str
+
+    if not attendee_to_time:
+        return []
+
+    # pending_approvals の送信者が参加者と一致するか照合
+    matched: dict[str, dict] = {}  # email -> {"time": str, "count": int}
+    for info in pending_approvals.values():
+        sender_addr = extract_email_address(info["email"].get("sender", ""))
+        if sender_addr in attendee_to_time:
+            if sender_addr not in matched:
+                matched[sender_addr] = {
+                    "time": attendee_to_time[sender_addr],
+                    "count": 0,
+                }
+            matched[sender_addr]["count"] += 1
+
+    if not matched:
+        return []
+
+    lines = ["", "⚡ <b>予定に関連するメール</b>", "─────────────"]
+    for email, data in matched.items():
+        lines.append(
+            f"・{data['time']}の会議参加者 {html.escape(email)} から"
+            f"未返信メール{data['count']}件"
+        )
+    return lines
 
 
 def _get_unread_summary(gmail_service, contacts: dict) -> dict:
@@ -154,6 +259,8 @@ async def send_daily_briefing(
     contacts: dict,
     pending_approvals: dict,
     discord_client=None,
+    calendar_client=None,
+    config: dict | None = None,
 ) -> None:
     """
     毎朝のブリーフィングメッセージを Telegram に送信する。
@@ -197,19 +304,31 @@ async def send_daily_briefing(
         lines.append("")
 
     # ── 📅 今日の予定 ──────────────────────────────
-    lines.append("📅 <b>今日の予定</b>")
-    events = get_today_events(calendar_service)
-    if events is None:
-        # Calendar API 未設定 or 取得エラー
-        lines.append("・取得できませんでした（Calendar API の設定を確認してください）")
-    elif events:
-        for ev in events:
-            loc = f"（{ev['location']}）" if ev["location"] else ""
-            lines.append(f"・{ev['start']} {ev['title']}{loc}")
-    else:
-        lines.append("・予定なし")
+    calendar_enabled = True
+    if config is not None:
+        calendar_enabled = config.get("calendar", {}).get("enabled", True)
 
-    lines.append("")
+    if calendar_enabled:
+        today_events = None
+        if calendar_client is not None:
+            try:
+                today_events = calendar_client.get_today_events()
+            except Exception as e:
+                logger.error(f"カレンダー取得エラー: {e}")
+
+        event_count = len(today_events) if today_events is not None else 0
+        lines.append(f"📅 <b>本日の予定（{event_count}件）</b>")
+        lines.extend(_format_calendar_section(today_events, contacts))
+        lines.append("")
+
+        # 関連メールセクション（今日の参加者からの未返信メールがあれば表示）
+        if today_events and pending_approvals:
+            related = _format_related_emails_section(
+                pending_approvals, today_events, contacts
+            )
+            if related:
+                lines.extend(related)
+                lines.append("")
 
     # ── 📝 今日のTODO ──────────────────────────────
     lines.append("📝 <b>今日のTODO</b>")
@@ -240,6 +359,7 @@ async def send_daily_briefing(
     )
     keyboard_rows = [button_row_1]
     keyboard_rows.append([
+        InlineKeyboardButton("📅 今日の予定を再表示", callback_data="show_calendar"),
         InlineKeyboardButton("📊 詳細ステータス", callback_data="detailed_status"),
     ])
     keyboard = InlineKeyboardMarkup(keyboard_rows)

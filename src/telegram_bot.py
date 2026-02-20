@@ -288,6 +288,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # 承認後に元メールを既読にする
             mark_as_read(gmail_service, email_id)
             del pending[email_id]
+            db = bot_data.get("db")
+            if db:
+                await db.update_email_status(email_id, "approved")
             await query.edit_message_text(
                 f"✅ 返信を送信しました。\n宛先：{html.escape(to_addr)}",
                 parse_mode="HTML",
@@ -326,6 +329,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         gmail_service = bot_data.get("gmail_service")
         mark_as_read(gmail_service, email_id)
         del pending[email_id]
+        db = bot_data.get("db")
+        if db:
+            await db.update_email_status(email_id, "read_only")
 
         memory_path = bot_data.get(
             "memory_path",
@@ -345,6 +351,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if email_id in pending:
             subject = pending[email_id]["email"].get("subject", "")
             del pending[email_id]
+            db = bot_data.get("db")
+            if db:
+                await db.update_email_status(email_id, "rejected")
             await query.edit_message_text(
                 f"❌ 返信案を却下しました。\n件名：{html.escape(subject)}",
                 parse_mode="HTML",
@@ -387,6 +396,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 status_text += f"\n・{subject}（{cat}）"
         status_text += _build_api_usage_text(bot_data)
         await query.edit_message_text(status_text, parse_mode="HTML")
+
+    # --- 今日の予定を再表示 ---
+    elif data == "show_calendar":
+        calendar_client = bot_data.get("calendar_client")
+        if calendar_client is None:
+            await query.edit_message_text("📅 カレンダーが設定されていません。")
+            return
+        try:
+            summary = calendar_client.format_today_summary()
+            await query.edit_message_text(summary)
+        except Exception as e:
+            logger.error(f"カレンダー再表示エラー: {e}")
+            await query.edit_message_text("⚠️ カレンダーの取得に失敗しました。")
 
     # --- Discord 返信 ---
     elif data.startswith("discord_reply:"):

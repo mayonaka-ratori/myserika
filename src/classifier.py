@@ -31,6 +31,18 @@ URGENT_KEYWORDS = [
     "要返信", "ご回答", "ご確認ください", "お願い",
 ]
 
+# カテゴリ優先度順（低→高）
+_PRIORITY_ORDER = [CATEGORY_IGNORE, CATEGORY_READ, CATEGORY_NORMAL, CATEGORY_URGENT]
+
+
+def _upgrade_category(category: str) -> str:
+    """カテゴリを優先度リストで1段階アップする。最高位はそのまま返す。"""
+    try:
+        idx = _PRIORITY_ORDER.index(category)
+        return _PRIORITY_ORDER[min(idx + 1, len(_PRIORITY_ORDER) - 1)]
+    except ValueError:
+        return category
+
 
 def extract_email_address(sender: str) -> str:
     """
@@ -135,36 +147,72 @@ def rule_based_classify(email: dict, contacts: dict) -> str | None:
     return None
 
 
-def classify(email: dict, gemini_client, contacts: dict, memory_context: str = "") -> dict:
+def classify(
+    email: dict,
+    gemini_client,
+    contacts: dict,
+    memory_context: str = "",
+    calendar_client=None,
+    meeting_participants=frozenset(),
+) -> dict:
     """
     メール1件を分類して結果を返すメイン関数。
     1. まずルールベース判定を試みる
     2. 判定できなければ Gemini に問い合わせる（memory_context を参考情報として渡す）
     3. 信頼度が低ければ "要確認" に変更してユーザーに判断を促す
-    戻り値: { "email_id": str, "category": str, "reason": str, "email": dict }
+    4. 送信者が会議参加者であればカテゴリを1段階アップする
+    calendar_client: 直接呼び出し時のみ渡す（classify_batch 経由では None を渡す）
+    meeting_participants: classify_batch で事前取得済みの参加者 set
+    戻り値: { "email_id": str, "category": str, "reason": str, "email": dict,
+              "is_meeting_participant": bool }
     """
     from gemini_client import classify_email as gemini_classify
 
     email_id = email.get("id", "")
+    sender_addr = extract_email_address(email.get("sender", ""))
+
+    # 会議参加者セットの決定
+    # classify_batch 経由では meeting_participants に事前取得済みの set が渡される
+    # 直接呼び出しで calendar_client が渡された場合のみ API を呼ぶ
+    participants: set[str] = set(meeting_participants)
+    if calendar_client is not None and not participants:
+        try:
+            fetched = calendar_client.get_meeting_participants(hours=24)
+            participants = set(fetched)
+        except Exception as e:
+            logger.warning(f"会議参加者取得失敗: {e}")
+
+    is_meeting_participant = sender_addr in participants
+    if is_meeting_participant:
+        logger.info(f"会議参加者からのメール検出: {sender_addr}")
 
     # ステップ1: ルールベース判定
     rule_result = rule_based_classify(email, contacts)
     if rule_result:
-        logger.debug(f"ルールベース判定: [{rule_result}] {email.get('subject', '')}")
+        category = rule_result
+        if is_meeting_participant:
+            category = _upgrade_category(category)
+        logger.debug(f"ルールベース判定: [{category}] {email.get('subject', '')}")
         return {
             "email_id": email_id,
-            "category": rule_result,
+            "category": category,
             "reason": "ルールベース判定",
             "email": email,
+            "is_meeting_participant": is_meeting_participant,
         }
 
-    # ステップ2: Gemini による判定（MEMORY.md の内容を参考情報として渡す）
+    # ステップ2: Gemini による判定（MEMORY.md の内容・カレンダー情報を参考として渡す）
+    calendar_note = ""
+    if is_meeting_participant:
+        calendar_note = f"この送信者（{sender_addr}）は直近24時間以内の会議参加者です。"
+
     gemini_result = gemini_classify(
         gemini_client,
         subject=email.get("subject", ""),
         sender=email.get("sender", ""),
         snippet=email.get("snippet", ""),
         memory_context=memory_context,
+        calendar_note=calendar_note,
     )
 
     category = gemini_result.get("category", CATEGORY_READ)
@@ -177,6 +225,8 @@ def classify(email: dict, gemini_client, contacts: dict, memory_context: str = "
             f"低信頼度 (confidence={confidence:.2f}): {email.get('subject', '')} → 要確認"
         )
         category = "要確認"
+    elif is_meeting_participant:
+        category = _upgrade_category(category)
 
     logger.debug(f"Gemini 判定: [{category}] {email.get('subject', '')}")
     return {
@@ -184,21 +234,44 @@ def classify(email: dict, gemini_client, contacts: dict, memory_context: str = "
         "category": category,
         "reason": reason,
         "email": email,
+        "is_meeting_participant": is_meeting_participant,
     }
 
 
 def classify_batch(
-    emails: list[dict], gemini_client, contacts: dict, memory_context: str = ""
+    emails: list[dict],
+    gemini_client,
+    contacts: dict,
+    memory_context: str = "",
+    calendar_client=None,
 ) -> list[dict]:
     """
     複数メールをまとめて分類して結果リストを返す。
     memory_context: MEMORY.md の内容（Gemini 分類の参考情報として各メールに渡す）
+    calendar_client: 渡された場合、冒頭で一度だけ get_meeting_participants() を呼んでキャッシュする
     内部で classify() を繰り返し呼び出し、エラーが発生しても処理を継続する。
     """
+    # calendar_client があれば N 通 × API 呼び出しを防ぐため冒頭で一括取得
+    meeting_participants: set[str] = set()
+    if calendar_client is not None:
+        try:
+            fetched = calendar_client.get_meeting_participants(hours=24)
+            meeting_participants = set(fetched)
+            logger.info(f"会議参加者 {len(meeting_participants)} 名を一括取得しました")
+        except Exception as e:
+            logger.warning(f"会議参加者一括取得失敗（カレンダーなしで続行）: {e}")
+
     results = []
     for email in emails:
         try:
-            result = classify(email, gemini_client, contacts, memory_context=memory_context)
+            result = classify(
+                email,
+                gemini_client,
+                contacts,
+                memory_context=memory_context,
+                calendar_client=None,  # 個別 API 呼び出しを防ぐため None を渡す
+                meeting_participants=meeting_participants,
+            )
             results.append(result)
             logger.debug(f"分類完了: [{result['category']}] {email.get('subject', '')}")
         except Exception as e:
@@ -209,6 +282,7 @@ def classify_batch(
                 "category": CATEGORY_READ,
                 "reason": f"分類エラーのためデフォルト: {e}",
                 "email": email,
+                "is_meeting_participant": False,
             })
     return results
 

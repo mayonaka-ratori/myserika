@@ -5,3 +5,8 @@ google-genai
 python-telegram-bot
 pyyaml
 discord.py
+fastapi
+uvicorn[standard]
+jinja2
+aiosqlite
+tzdata

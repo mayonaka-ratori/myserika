@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 _DAILY_LIMIT = 1500
 _MINUTE_LIMIT = 15
 
+# 日程調整メールの判定キーワード
+_SCHEDULING_KEYWORDS = [
+    "日程", "打ち合わせ", "ミーティング", "スケジュール", "都合", "候補", "調整",
+    "お時間", "ご都合", "schedule", "meeting", "available", "availability",
+]
+
+
+def is_scheduling_email(subject: str, body: str) -> bool:
+    """件名・本文に日程調整キーワードが含まれるか判定する。"""
+    text = (subject + " " + body).lower()
+    return any(kw.lower() in text for kw in _SCHEDULING_KEYWORDS)
+
 
 def init_client(api_key: str, model_name: str = "gemini-2.5-flash") -> dict:
     """
@@ -42,6 +54,7 @@ def init_client(api_key: str, model_name: str = "gemini-2.5-flash") -> dict:
         "daily_count": 0,
         "daily_date": today,
         "minute_calls": [],  # タイムスタンプのリスト（直近60秒分）
+        "api_call_log": [],  # {"endpoint": str, "ts": str} のリスト（main.py でフラッシュ）
     }
 
 
@@ -145,10 +158,12 @@ def classify_email(
     sender: str,
     snippet: str,
     memory_context: str = "",
+    calendar_note: str = "",
 ) -> dict:
     """
     メールの件名・送信者・本文冒頭をもとに Gemini で分類を行う。
     memory_context: MEMORY.md の内容（ユーザーの傾向・過去の修正ログ）を渡すと精度が向上する。
+    calendar_note: カレンダー情報（会議参加者かどうか等）を渡すと精度が向上する。
     戻り値: { "category": str, "reason": str, "confidence": float }
     カテゴリ候補: "要返信（重要）" / "要返信（通常）" / "閲覧のみ" / "無視"
     レート制限時は category="__RETRY__" を返す（main.py で retry_queue に追加される）。
@@ -158,7 +173,11 @@ def classify_email(
         excerpt = memory_context[:500]
         context_section = f"\n【ユーザー傾向メモ（参考）】\n{excerpt}\n"
 
-    prompt = f"""以下のメールを分類してください。{context_section}
+    calendar_section = ""
+    if calendar_note:
+        calendar_section = f"\n【カレンダー情報】\n{calendar_note}\n"
+
+    prompt = f"""以下のメールを分類してください。{context_section}{calendar_section}
 【送信者】{sender}
 【件名】{subject}
 【本文冒頭】{snippet}
@@ -185,6 +204,10 @@ def classify_email(
 
         # confidence を float に正規化
         result["confidence"] = float(result.get("confidence", 0.5))
+
+        client_data.setdefault("api_call_log", []).append(
+            {"endpoint": "classify_email", "ts": datetime.now().isoformat()}
+        )
         return result
 
     except ResourceExhausted:
@@ -218,11 +241,21 @@ def generate_reply_draft(
     original_email: dict,
     user_style: str,
     sender_info: str,
+    calendar_context: dict | None = None,
 ) -> str:
     """
     元メールの内容・ユーザーの返信スタイル・送信者情報をもとに返信案を生成する。
     メールの言語（日本語／英語）を自動判定し、同じ言語で返信案を生成する。
     日本語: 署名なし、英語: "Best regards, [Your Name]" 形式の署名あり。
+    calendar_context: カレンダー情報を渡すと返信案にカレンダー対応指示が追加される。
+      構造: {
+        "client": CalendarClient,      # get_free_slots() / get_today_events() 用
+        "is_busy": bool,               # 現在会議中かどうか
+        "current_meeting": dict|None,  # 現在の会議情報
+        "participants": set[str],      # 本日の会議参加者メールアドレス
+        "is_participant": bool,        # 送信者が参加者かどうか
+        "sender_email": str,           # 送信者メールアドレス
+      }
     レート制限時は "__RETRY__" を返す（main.py で retry_queue に追加される）。
     戻り値: 返信本文テキスト（件名を含む）
     """
@@ -236,8 +269,64 @@ def generate_reply_draft(
     else:
         lang_instruction = "英語で返信し、末尾に「Best regards, [Your Name]」形式の署名をつけてください。"
 
-    prompt = f"""以下のメールに対する返信案を生成してください。
+    # カレンダー対応指示セクションを構築
+    calendar_section = ""
+    if calendar_context is not None:
+        cal_client = calendar_context.get("client")
+        is_busy = calendar_context.get("is_busy", False)
+        current_meeting = calendar_context.get("current_meeting")
+        is_participant = calendar_context.get("is_participant", False)
+        sender_email = calendar_context.get("sender_email", "")
 
+        cal_lines = []
+
+        # (a) 現在会議中: 返信遅延の旨を冒頭に含める
+        if is_busy and current_meeting:
+            meeting_title = current_meeting.get("title", "会議")
+            end_dt = current_meeting.get("end")
+            end_str = end_dt.strftime("%H:%M") if end_dt else "終了時刻不明"
+            cal_lines.append(
+                f"現在「{meeting_title}」（〜{end_str}）に参加中です。"
+                f"返信文の冒頭に「現在会議中のため、返信が遅くなりました」等の一言を入れてください。"
+            )
+
+        # (b) 日程調整メール: 今日・明日の空き時間を提案
+        if cal_client is not None and is_scheduling_email(original_subject, original_body):
+            try:
+                from datetime import timedelta
+                today = datetime.now().date()
+                tomorrow = today + timedelta(days=1)
+                today_slots = cal_client.format_free_slots_text(target_date=today)
+                tomorrow_slots = cal_client.format_free_slots_text(target_date=tomorrow)
+                cal_lines.append(
+                    f"日程調整メールです。以下の空き時間を返信文に含めてください:\n"
+                    f"{today_slots}\n{tomorrow_slots}"
+                )
+            except Exception as e:
+                logger.warning(f"空き時間取得失敗（スキップ）: {e}")
+
+        # (c) 会議参加者: 共通会議の文脈情報を含める
+        if is_participant and cal_client is not None and sender_email:
+            try:
+                today_events = cal_client.get_today_events()
+                related = [
+                    e for e in today_events
+                    if sender_email in e.get("attendees", [])
+                ]
+                if related:
+                    event_names = "、".join(e["title"] for e in related[:3])
+                    cal_lines.append(
+                        f"この送信者（{sender_email}）は本日の会議「{event_names}」の参加者です。"
+                        f"この文脈を踏まえて返信してください。"
+                    )
+            except Exception as e:
+                logger.warning(f"会議参加者文脈取得失敗（スキップ）: {e}")
+
+        if cal_lines:
+            calendar_section = "\n【カレンダー対応指示】\n" + "\n".join(cal_lines) + "\n"
+
+    prompt = f"""以下のメールに対する返信案を生成してください。
+{calendar_section}
 【スタイル指示】{style_instruction}
 【言語・署名指示】{lang_instruction}
 【送信者情報】{sender_info if sender_info else "不明"}
@@ -253,6 +342,9 @@ def generate_reply_draft(
 
     try:
         draft = _call_model(client_data, prompt)
+        client_data.setdefault("api_call_log", []).append(
+            {"endpoint": "generate_reply_draft", "ts": datetime.now().isoformat()}
+        )
         return draft.strip()
     except ResourceExhausted:
         logger.warning("Gemini API レート制限: 返信案生成を retry_queue に追加します")
@@ -283,6 +375,9 @@ def refine_reply_draft(client_data: dict, previous_draft: str, user_instruction:
 
     try:
         revised = _call_model(client_data, prompt)
+        client_data.setdefault("api_call_log", []).append(
+            {"endpoint": "refine_reply_draft", "ts": datetime.now().isoformat()}
+        )
         return revised.strip()
     except Exception as e:
         logger.error(f"返信案修正エラー: {e}")

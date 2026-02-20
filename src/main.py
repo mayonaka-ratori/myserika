@@ -35,7 +35,10 @@ from classifier import (
     CATEGORY_NORMAL,
     extract_email_address,
 )
+from calendar_client import CalendarClient
 from discord_client import DiscordMonitor
+import web_server
+from database import Database
 
 # ログ設定（INFOレベル、タイムスタンプ付き）
 logging.basicConfig(
@@ -151,14 +154,15 @@ def _is_learning_done(kind: str, memory_path: Path) -> bool:
 
 
 async def check_and_process_emails(
-    gmail_service, gemini_client, telegram_app, config: dict
+    gmail_service, gemini_client, telegram_app, config: dict,
+    calendar_client=None,
 ) -> None:
     """
     メールチェック〜分類〜返信案生成〜Telegram 通知までの一連の処理を実行する。
     処理フロー:
       0. retry_queue 内のメールを先に再処理
       1. get_unread_emails() で未読メールを取得
-      2. classify_batch() で4カテゴリに分類
+      2. classify_batch() で4カテゴリに分類（calendar_client があれば会議参加者を考慮）
       3. 要返信メールに対して返信案を生成して pending_approvals に格納
          （__RETRY__ カテゴリや "__RETRY__" ドラフトは retry_queue に追加）
       4. Telegram にサマリーを送信
@@ -175,6 +179,24 @@ async def check_and_process_emails(
         pending_approvals = telegram_app.bot_data.setdefault("pending_approvals", {})
         retry_queue: list = telegram_app.bot_data.setdefault("retry_queue", [])
 
+        # カレンダーコンテキストを一括構築（calendar_client があれば現在状態を取得）
+        calendar_context = None
+        if calendar_client is not None:
+            try:
+                calendar_context = {
+                    "client": calendar_client,
+                    "is_busy": calendar_client.is_busy_now(),
+                    "current_meeting": calendar_client.get_current_meeting(),
+                    "participants": set(calendar_client.get_meeting_participants(hours=24)),
+                }
+                logger.info(
+                    f"カレンダーコンテキスト構築完了: "
+                    f"会議中={calendar_context['is_busy']}, "
+                    f"参加者={len(calendar_context['participants'])}名"
+                )
+            except Exception as e:
+                logger.warning(f"カレンダーコンテキスト取得失敗（カレンダーなしで続行）: {e}")
+
         # ステップ0: retry_queue の再処理
         if retry_queue:
             logger.info(f"retry_queue 内の {len(retry_queue)} 件のメールを再処理します")
@@ -182,7 +204,8 @@ async def check_and_process_emails(
             telegram_app.bot_data["retry_queue"] = []
 
             retry_classified = classify_batch(
-                retry_emails, gemini_client, contacts, memory_context=user_style
+                retry_emails, gemini_client, contacts, memory_context=user_style,
+                calendar_client=calendar_client,
             )
             new_retry: list = []
 
@@ -207,7 +230,18 @@ async def check_and_process_emails(
                     else email.get("sender", "")
                 )
 
-                draft = generate_reply_draft(gemini_client, email, user_style, sender_info)
+                email_calendar_context = None
+                if calendar_context is not None:
+                    email_calendar_context = {
+                        **calendar_context,
+                        "is_participant": result.get("is_meeting_participant", False),
+                        "sender_email": sender_addr,
+                    }
+
+                draft = generate_reply_draft(
+                    gemini_client, email, user_style, sender_info,
+                    calendar_context=email_calendar_context,
+                )
                 if draft == "__RETRY__":
                     new_retry.append(email)
                     continue
@@ -217,6 +251,23 @@ async def check_and_process_emails(
                     "draft": draft,
                     "category": category,
                 }
+
+                # DB に保存（retry 再処理分）
+                db = telegram_app.bot_data.get("db")
+                if db:
+                    lang = "ja" if re.search(
+                        r"[\u3040-\u30ff\u4e00-\u9fff]",
+                        email.get("subject", "") + email.get("body", ""),
+                    ) else "en"
+                    await db.save_email(
+                        message_id=email_id,
+                        sender=email.get("sender", ""),
+                        subject=email.get("subject", ""),
+                        body_preview=(email.get("body", "") or email.get("snippet", ""))[:300],
+                        category=category,
+                        reply_draft=draft,
+                        language=lang,
+                    )
 
             if new_retry:
                 telegram_app.bot_data["retry_queue"] = new_retry
@@ -232,8 +283,11 @@ async def check_and_process_emails(
             logger.info("新着メールなし")
             return
 
-        # ステップ2: 連絡先を読み込んで分類を実行（MEMORY.md の内容を参考情報として渡す）
-        classified = classify_batch(emails, gemini_client, contacts, memory_context=user_style)
+        # ステップ2: 連絡先を読み込んで分類を実行（MEMORY.md・カレンダー情報を参考として渡す）
+        classified = classify_batch(
+            emails, gemini_client, contacts, memory_context=user_style,
+            calendar_client=calendar_client,
+        )
 
         # ステップ3: 要返信メールの返信案を生成して pending_approvals に格納
         new_drafts = 0
@@ -265,8 +319,19 @@ async def check_and_process_emails(
                 else email.get("sender", "")
             )
 
+            email_calendar_context = None
+            if calendar_context is not None:
+                email_calendar_context = {
+                    **calendar_context,
+                    "is_participant": result.get("is_meeting_participant", False),
+                    "sender_email": sender_addr,
+                }
+
             logger.info(f"返信案生成中: {email.get('subject', '')}")
-            draft = generate_reply_draft(gemini_client, email, user_style, sender_info)
+            draft = generate_reply_draft(
+                gemini_client, email, user_style, sender_info,
+                calendar_context=email_calendar_context,
+            )
 
             # 返信案生成もレート制限で失敗した場合は retry_queue に追加
             if draft == "__RETRY__":
@@ -280,6 +345,23 @@ async def check_and_process_emails(
                 "category": category,
             }
             new_drafts += 1
+
+            # DB に保存（言語は日本語文字の有無で判定）
+            db = telegram_app.bot_data.get("db")
+            if db:
+                lang = "ja" if re.search(
+                    r"[\u3040-\u30ff\u4e00-\u9fff]",
+                    email.get("subject", "") + email.get("body", ""),
+                ) else "en"
+                await db.save_email(
+                    message_id=email_id,
+                    sender=email.get("sender", ""),
+                    subject=email.get("subject", ""),
+                    body_preview=(email.get("body", "") or email.get("snippet", ""))[:300],
+                    category=category,
+                    reply_draft=draft,
+                    language=lang,
+                )
 
         # retry_queue に追加して Telegram 通知
         if new_retry_emails:
@@ -302,6 +384,15 @@ async def check_and_process_emails(
             f"処理完了: {len(classified)} 件分類, 返信案 {new_drafts} 件生成, "
             f"承認待ち合計 {len(pending_approvals)} 件"
         )
+
+        # gemini_client の api_call_log をフラッシュして DB に記録
+        db = telegram_app.bot_data.get("db")
+        if db:
+            call_log: list = gemini_client.get("api_call_log", [])
+            if call_log:
+                for entry in call_log:
+                    await db.log_api_call("gemini", entry["endpoint"])
+                gemini_client["api_call_log"] = []
 
     except Exception as e:
         logger.error(f"メール処理中にエラー: {e}", exc_info=True)
@@ -353,6 +444,8 @@ async def daily_briefing_scheduler(
                     contacts=contacts,
                     pending_approvals=pending,
                     discord_client=discord_client,
+                    calendar_client=telegram_app.bot_data.get("calendar_client"),
+                    config=config,
                 )
                 last_sent_date = today
             except Exception as e:
@@ -389,6 +482,15 @@ async def main_loop(config: dict) -> None:
         )
         calendar_service = None
 
+    # CalendarClient 初期化（calendar_service が取得できた場合のみ）
+    calendar_client = None
+    if calendar_service is not None:
+        try:
+            calendar_client = CalendarClient(calendar_service)
+            logger.info("CalendarClient 初期化完了")
+        except Exception as e:
+            logger.warning(f"CalendarClient 初期化失敗（カレンダー連携なしで続行）: {e}")
+
     # Gemini クライアント初期化
     logger.info("Gemini クライアント初期化中...")
     gemini_client = init_gemini(
@@ -399,6 +501,9 @@ async def main_loop(config: dict) -> None:
     # Telegram Bot 初期化
     logger.info("Telegram Bot 初期化中...")
     telegram_app = build_application(config["telegram"]["bot_token"])
+
+    # 手動チェックトリガー用イベント
+    _manual_check_event = asyncio.Event()
 
     # bot_data に共有リソースを格納（コールバックハンドラーからも参照できる）
     telegram_app.bot_data.update({
@@ -411,9 +516,19 @@ async def main_loop(config: dict) -> None:
         "retry_queue": [],
         # 🔄 再チェックボタン用: コールバックから呼び出せるようにする
         "_recheck_fn": check_and_process_emails,
+        "_manual_check_event": _manual_check_event,
         "config": config,
         "discord_client": None,
     })
+    telegram_app.bot_data["calendar_service"] = calendar_service
+    telegram_app.bot_data["calendar_client"] = calendar_client
+
+    # DB 初期化（data/ ディレクトリは init_db() が自動生成）
+    db = Database(str(project_root / "data" / "secretary.db"))
+    await db.init_db()
+    telegram_app.bot_data["db"] = db
+
+    web_server.init(telegram_app.bot_data)
 
     # Discord クライアント初期化（エラーでも Gmail 機能は継続）
     discord_monitor = None
@@ -463,6 +578,11 @@ async def main_loop(config: dict) -> None:
             gmail_service, calendar_service, gemini_client, telegram_app, config
         )
     )
+    # Web サーバー起動（config の web.enabled が false なら起動しない）
+    if config.get("web", {}).get("enabled", True):
+        web_host = config.get("web", {}).get("host", "0.0.0.0")
+        web_port = config.get("web", {}).get("port", 8080)
+        asyncio.create_task(web_server.start(host=web_host, port=web_port))
 
     logger.info(
         f"MY-SECRETARY 起動完了。"
@@ -492,12 +612,18 @@ async def main_loop(config: dict) -> None:
                 continue
 
             await check_and_process_emails(
-                gmail_service, gemini_client, telegram_app, config
+                gmail_service, gemini_client, telegram_app, config,
+                calendar_client=calendar_client,
             )
             logger.info(
                 f"{config['gmail']['check_interval_minutes']} 分後に次のチェックを実行します。"
             )
-            await asyncio.sleep(interval_sec)
+            try:
+                await asyncio.wait_for(_manual_check_event.wait(), timeout=interval_sec)
+                _manual_check_event.clear()
+                logger.info("手動トリガーによりメールチェックを即時実行します")
+            except asyncio.TimeoutError:
+                pass  # 通常の定期実行
 
     except KeyboardInterrupt:
         logger.info("Ctrl+C を検出。終了処理中...")

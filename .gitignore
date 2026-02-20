@@ -20,3 +20,6 @@ MEMORY.md
 STATE.md
 contacts.md
 .claude/
+
+# SQLite DB
+data/*.db

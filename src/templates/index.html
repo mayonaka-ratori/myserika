@@ -1,0 +1,1939 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MY-SECRETARY Dashboard</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #0f0f1a;
+      --card: #12121e;
+      --card-border: #1e1e32;
+      --accent: #7c5cbf;
+      --accent-dim: #5a3fa0;
+      --text: #e0e0f0;
+      --text-dim: #8888aa;
+      --success: #4caf50;
+      --warn: #ff9800;
+      --danger: #f44336;
+      --info: #2196f3;
+      --sidebar-w: 220px;
+      --header-h: 56px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ─── Header ─── */
+    header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: var(--header-h);
+      background: var(--surface);
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 16px;
+      z-index: 100;
+    }
+
+    .logo {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--accent);
+    }
+
+    .logo span { color: var(--text); }
+
+    .header-clock {
+      margin-left: auto;
+      font-size: 13px;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--success);
+    }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ─── Layout ─── */
+    .layout {
+      display: flex;
+      padding-top: var(--header-h);
+      min-height: 100vh;
+    }
+
+    /* ─── Sidebar ─── */
+    nav {
+      width: var(--sidebar-w);
+      background: var(--surface);
+      border-right: 1px solid var(--card-border);
+      padding: 20px 0;
+      position: fixed;
+      top: var(--header-h);
+      bottom: 0;
+      overflow-y: auto;
+    }
+
+    .nav-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      padding: 8px 20px 4px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      margin: 2px 8px;
+      border-radius: 7px;
+      cursor: pointer;
+      color: var(--text-dim);
+      transition: all 0.15s;
+      text-decoration: none;
+      user-select: none;
+    }
+
+    .nav-item:hover {
+      background: rgba(124,92,191,0.12);
+      color: var(--text);
+    }
+
+    .nav-item.active {
+      background: rgba(124,92,191,0.2);
+      color: var(--accent);
+    }
+
+    .nav-item .nav-icon { font-size: 15px; }
+
+    .badge {
+      margin-left: auto;
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 10px;
+      min-width: 18px;
+      text-align: center;
+    }
+
+    .badge.warn { background: var(--warn); }
+    .badge.danger { background: var(--danger); }
+
+    /* ─── Main content ─── */
+    main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+    }
+
+    .view { display: block; }
+    .view[hidden] { display: none !important; }
+
+    .view-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+    }
+
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    /* ─── Cards ─── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--text);
+    }
+
+    .card-header .icon { font-size: 16px; }
+
+    /* ─── Stat numbers ─── */
+    .stats-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-item {
+      flex: 1;
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 14px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .stat-value.warn { color: var(--warn); }
+    .stat-value.success { color: var(--success); }
+    .stat-value.info { color: var(--info); }
+    .stat-value.accent { color: var(--accent); }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    /* ─── Table ─── */
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-dim);
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    td {
+      padding: 10px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      vertical-align: top;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    tr.removing {
+      opacity: 0;
+      transform: translateX(20px);
+      transition: all 0.3s ease;
+    }
+
+    .subject-cell {
+      max-width: 200px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .category-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .category-tag.urgent { background: rgba(244,67,54,0.2); color: var(--danger); }
+    .category-tag.normal { background: rgba(33,150,243,0.2); color: var(--info); }
+    .category-tag.info-tag { background: rgba(255,152,0,0.2); color: var(--warn); }
+    .category-tag.spam { background: rgba(136,136,136,0.2); color: var(--text-dim); }
+
+    /* ─── Status tag ─── */
+    .status-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .status-tag.pending  { background: rgba(255,152,0,0.2);   color: var(--warn); }
+    .status-tag.approved { background: rgba(76,175,80,0.2);    color: var(--success); }
+    .status-tag.rejected { background: rgba(244,67,54,0.15);   color: var(--danger); }
+    .status-tag.read_only{ background: rgba(136,136,136,0.2);  color: var(--text-dim); }
+
+    .draft-preview {
+      max-width: 220px;
+      font-size: 12px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .btn {
+      padding: 5px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.8; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-approve {
+      background: rgba(76,175,80,0.2);
+      color: var(--success);
+      border: 1px solid rgba(76,175,80,0.4);
+    }
+
+    .btn-reject {
+      background: rgba(244,67,54,0.15);
+      color: var(--danger);
+      border: 1px solid rgba(244,67,54,0.3);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-secondary {
+      background: var(--card-border);
+      color: var(--text);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: var(--text-dim);
+    }
+
+    .empty-icon { font-size: 32px; margin-bottom: 8px; }
+
+    /* ─── Timeline ─── */
+    .timeline { position: relative; }
+
+    .timeline-item {
+      display: flex;
+      gap: 14px;
+      padding: 10px 0;
+      position: relative;
+    }
+
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: 35px;
+      top: 28px;
+      bottom: -10px;
+      width: 1px;
+      background: var(--card-border);
+    }
+
+    .timeline-item:last-child::before { display: none; }
+
+    .timeline-time {
+      min-width: 44px;
+      font-size: 11px;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      padding-top: 2px;
+    }
+
+    .timeline-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-top: 4px;
+      flex-shrink: 0;
+    }
+
+    .timeline-dot.allday { background: var(--text-dim); }
+
+    .timeline-content { flex: 1; }
+
+    .timeline-title {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .timeline-sub {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    /* ─── Progress bar ─── */
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .progress-bar {
+      height: 6px;
+      background: var(--card-border);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--accent);
+      transition: width 0.5s ease;
+    }
+
+    .progress-fill.warn { background: var(--warn); }
+    .progress-fill.danger { background: var(--danger); }
+
+    /* ─── Live feed ─── */
+    #live-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+
+    .feed-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border-radius: 6px;
+      font-size: 12px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .feed-time {
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    .feed-msg { color: var(--text); flex: 1; }
+
+    .feed-type {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .feed-type.processed { background: rgba(76,175,80,0.2); color: var(--success); }
+    .feed-type.rejected { background: rgba(244,67,54,0.15); color: var(--danger); }
+    .feed-type.info { background: rgba(33,150,243,0.2); color: var(--info); }
+    .feed-type.dismissed { background: rgba(136,136,136,0.2); color: var(--text-dim); }
+
+    .ws-status {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ws-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+
+    .ws-dot.connected { background: var(--success); }
+
+    /* ─── Pending preview list ─── */
+    .pending-preview-item {
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .pending-preview-item:last-child { border-bottom: none; }
+    .pending-preview-subject {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .pending-preview-sender {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ─── Contacts grid ─── */
+    .contacts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .contact-card {
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .contact-name {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .contact-email {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+
+    .priority-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .priority-badge.high { background: rgba(244,67,54,0.2); color: var(--danger); }
+    .priority-badge.medium { background: rgba(255,152,0,0.2); color: var(--warn); }
+    .priority-badge.low { background: rgba(136,136,136,0.2); color: var(--text-dim); }
+
+    /* ─── Mail tab bar ─── */
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      background: var(--surface);
+      border-radius: 8px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text-dim);
+      background: transparent;
+      border: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .tab-btn:hover { color: var(--text); background: rgba(124,92,191,0.1); }
+    .tab-btn.active { background: rgba(124,92,191,0.2); color: var(--accent); }
+
+    .tab-badge {
+      background: var(--card-border);
+      color: var(--text-dim);
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      min-width: 16px;
+      text-align: center;
+    }
+
+    .tab-btn.active .tab-badge { background: var(--accent); color: #fff; }
+
+    /* ─── Search bar ─── */
+    .search-bar {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 12px;
+      outline: none;
+      margin-bottom: 12px;
+    }
+
+    .search-bar:focus { border-color: var(--accent); }
+    .search-bar::placeholder { color: var(--text-dim); }
+
+    /* ─── Mail table ─── */
+    .mail-row { cursor: pointer; }
+    .mail-row:hover td { background: rgba(124,92,191,0.05); }
+
+    /* ─── Accordion detail row ─── */
+    .accordion-detail { display: none; }
+    .accordion-detail.open { display: table-row; }
+    .accordion-detail td { background: rgba(10,10,20,0.6); }
+
+    .body-preview {
+      background: var(--surface);
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+      white-space: pre-wrap;
+      max-height: 100px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    .draft-ta {
+      width: 100%;
+      min-height: 110px;
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 10px;
+      resize: vertical;
+      outline: none;
+      margin-top: 8px;
+    }
+
+    .draft-ta:focus { border-color: var(--accent); }
+    .draft-ta[readonly] { opacity: 0.7; cursor: default; }
+
+    .expand-arrow {
+      font-size: 11px;
+      transition: transform 0.2s;
+      color: var(--text-dim);
+    }
+
+    .mail-row.expanded .expand-arrow { transform: rotate(180deg); }
+
+    /* ─── Settings tabs ─── */
+    .settings-tab-bar {
+      display: flex;
+      gap: 0;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    .settings-tab-btn {
+      padding: 9px 18px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      color: var(--text-dim);
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all 0.15s;
+    }
+
+    .settings-tab-btn:hover { color: var(--text); }
+    .settings-tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .settings-tab-content { display: none; }
+    .settings-tab-content.active { display: block; }
+
+    /* ─── Settings ─── */
+    .settings-section {
+      margin-bottom: 24px;
+    }
+
+    .settings-label {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    textarea.memory-editor {
+      width: 100%;
+      min-height: 400px;
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      padding: 12px;
+      resize: vertical;
+      outline: none;
+    }
+
+    textarea.memory-editor:focus {
+      border-color: var(--accent);
+    }
+
+    .save-status {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-left: 10px;
+    }
+
+    .save-status.ok { color: var(--success); }
+    .save-status.err { color: var(--danger); }
+
+    /* ─── Priority select ─── */
+    select.priority-sel {
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 11px;
+      padding: 4px 8px;
+      cursor: pointer;
+      outline: none;
+      margin-top: 6px;
+    }
+
+    select.priority-sel:focus { border-color: var(--accent); }
+
+    /* ─── Config table ─── */
+    .config-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    .config-table td {
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .config-table td:first-child {
+      color: var(--text-dim);
+      width: 180px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .config-table tr:last-child td { border-bottom: none; }
+    .config-section-header {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      padding: 14px 10px 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    /* ─── System operation buttons ─── */
+    .system-btn {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 16px 18px;
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      width: 100%;
+      text-align: left;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+
+    .system-btn:hover { border-color: var(--accent); background: rgba(124,92,191,0.08); }
+    .system-btn.danger:hover { border-color: var(--danger); background: rgba(244,67,54,0.08); }
+    .system-btn-icon { font-size: 22px; flex-shrink: 0; }
+    .system-btn-desc { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+
+    /* ─── Draft modal ─── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 560px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .modal-title {
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .modal-body {
+      white-space: pre-wrap;
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.6;
+      margin-bottom: 16px;
+      background: var(--surface);
+      padding: 12px;
+      border-radius: 6px;
+    }
+
+    .modal-close {
+      background: var(--card-border);
+      color: var(--text);
+      border: none;
+      padding: 7px 16px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    /* ─── Toast ─── */
+    #toast {
+      display: none;
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 12px 18px;
+      font-size: 13px;
+      color: var(--text);
+      z-index: 999;
+      animation: fadeIn 0.3s ease;
+    }
+
+    /* ─── Scrollbar ─── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">▌ MY-<span>SECRETARY</span></div>
+  <div class="status-badge">
+    <div class="status-dot"></div>
+    稼働中
+  </div>
+  <div class="ws-status" style="margin-left:16px;">
+    <div class="ws-dot" id="ws-dot"></div>
+    <span id="ws-label">未接続</span>
+  </div>
+  <div class="header-clock" id="clock">--:--:--</div>
+</header>
+
+<!-- Layout -->
+<div class="layout">
+
+  <!-- Sidebar -->
+  <nav>
+    <div class="nav-label">ナビゲーション</div>
+    <div class="nav-item active" data-view="dashboard" onclick="showView('dashboard', this)">
+      <span class="nav-icon">📊</span> ダッシュボード
+    </div>
+    <div class="nav-item" data-view="mail" onclick="showView('mail', this)">
+      <span class="nav-icon">📬</span> メール
+      <span class="badge warn" id="nav-pending-count">0</span>
+    </div>
+    <div class="nav-item" data-view="calendar" onclick="showView('calendar', this)">
+      <span class="nav-icon">📅</span> カレンダー
+    </div>
+    <div class="nav-item" data-view="contacts" onclick="showView('contacts', this)">
+      <span class="nav-icon">👥</span> 連絡先
+    </div>
+    <div class="nav-item" data-view="settings" onclick="showView('settings', this)">
+      <span class="nav-icon">⚙️</span> 設定
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main>
+
+    <!-- ═══ ダッシュボードビュー ═══ -->
+    <div class="view" id="view-dashboard">
+      <div class="view-title"><span>📊</span> ダッシュボード</div>
+
+      <!-- 今日の概要 -->
+      <div class="stats-row">
+        <div class="stat-item">
+          <div class="stat-value success" id="stat-processed">0</div>
+          <div class="stat-label">処理済み</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value warn" id="stat-pending">0</div>
+          <div class="stat-label">承認待ち</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value accent" id="stat-discord">0</div>
+          <div class="stat-label">Discord 通知数</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+
+        <!-- 承認待ちメール サマリー -->
+        <div class="card">
+          <div class="card-header"><span class="icon">📬</span> 承認待ちメール</div>
+          <div id="dash-pending-preview">
+            <div class="empty-state"><div class="empty-icon">📭</div>承認待ちメールはありません</div>
+          </div>
+          <div style="margin-top:12px;">
+            <div class="nav-item" style="margin:0;padding:8px 10px;justify-content:center;color:var(--accent);font-size:12px;"
+                 onclick="showView('mail', document.querySelector('[data-view=mail]'))">
+              すべて表示 →
+            </div>
+          </div>
+        </div>
+
+        <!-- 今日の予定 -->
+        <div class="card">
+          <div class="card-header"><span class="icon">📅</span> 今日の予定</div>
+          <div class="timeline" id="dash-calendar-timeline">
+            <div class="empty-state"><div class="empty-icon">📅</div>予定を読み込み中...</div>
+          </div>
+        </div>
+
+        <!-- API 使用量 -->
+        <div class="card">
+          <div class="card-header"><span class="icon">📈</span> API 使用量</div>
+
+          <div class="progress-label">
+            <span>Gemini 日次リクエスト</span>
+            <span id="gemini-daily-count">-- / 1500</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="gemini-daily-bar" style="width:0%"></div>
+          </div>
+
+          <div class="progress-label">
+            <span>Gemini 分次リクエスト</span>
+            <span id="gemini-minute-count">-- / 15</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="gemini-minute-bar" style="width:0%"></div>
+          </div>
+
+          <div id="api-remaining" style="font-size:12px;color:var(--text-dim);margin-top:4px;">
+            残り: --
+          </div>
+        </div>
+
+        <!-- ライブフィード -->
+        <div class="card">
+          <div class="card-header"><span class="icon">🔔</span> ライブフィード</div>
+          <div id="live-feed">
+            <div class="empty-state"><div class="empty-icon">🔔</div>イベント待機中...</div>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /dashboard -->
+
+    <!-- ═══ メールビュー ═══ -->
+    <div class="view" id="view-mail" hidden>
+      <div class="view-title"><span>📬</span> メール</div>
+
+      <!-- 検索バー -->
+      <input type="text" class="search-bar" id="mail-search"
+             placeholder="件名・送信者で検索..."
+             oninput="filterMailTable(this.value)">
+
+      <!-- タブバー -->
+      <div class="tab-bar">
+        <button class="tab-btn" data-tab="pending" onclick="fetchMailTab('pending')">
+          承認待ち <span class="tab-badge" id="tab-count-pending">0</span>
+        </button>
+        <button class="tab-btn" data-tab="all" onclick="fetchMailTab('all')">
+          全件 <span class="tab-badge" id="tab-count-all">0</span>
+        </button>
+        <button class="tab-btn" data-tab="reply_needed" onclick="fetchMailTab('reply_needed')">
+          要返信 <span class="tab-badge" id="tab-count-reply_needed">0</span>
+        </button>
+        <button class="tab-btn" data-tab="read_only" onclick="fetchMailTab('read_only')">
+          閲覧のみ <span class="tab-badge" id="tab-count-read_only">0</span>
+        </button>
+        <button class="tab-btn" data-tab="rejected" onclick="fetchMailTab('rejected')">
+          却下 <span class="tab-badge" id="tab-count-rejected">0</span>
+        </button>
+      </div>
+
+      <!-- メールテーブル -->
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日時</th>
+                <th>送信者</th>
+                <th>件名</th>
+                <th>分類</th>
+                <th>状態</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="mail-tbody">
+              <tr><td colspan="6">
+                <div class="empty-state"><div class="empty-icon">📬</div>タブを選択してメールを表示します</div>
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /mail -->
+
+    <!-- ═══ カレンダービュー ═══ -->
+    <div class="view" id="view-calendar" hidden>
+      <div class="view-title"><span>📅</span> カレンダー</div>
+      <div class="card">
+        <div class="card-header">
+          <span class="icon">📅</span>
+          <span id="cal-date-label">今日の予定</span>
+        </div>
+        <div class="timeline" id="cal-full-timeline">
+          <div class="empty-state"><div class="empty-icon">📅</div>予定を読み込み中...</div>
+        </div>
+      </div>
+    </div><!-- /calendar -->
+
+    <!-- ═══ 連絡先ビュー ═══ -->
+    <div class="view" id="view-contacts" hidden>
+      <div class="view-title"><span>👥</span> 連絡先</div>
+      <div id="contacts-grid-wrap">
+        <div class="empty-state"><div class="empty-icon">👥</div>連絡先を読み込み中...</div>
+      </div>
+    </div><!-- /contacts -->
+
+    <!-- ═══ 設定ビュー ═══ -->
+    <div class="view" id="view-settings" hidden>
+      <div class="view-title"><span>⚙️</span> 設定</div>
+
+      <!-- 設定タブバー -->
+      <div class="settings-tab-bar">
+        <button class="settings-tab-btn active" data-stab="memory"   onclick="showSettingsTab('memory')">📝 MEMORY</button>
+        <button class="settings-tab-btn"         data-stab="contacts" onclick="showSettingsTab('contacts')">👥 連絡先</button>
+        <button class="settings-tab-btn"         data-stab="config"   onclick="showSettingsTab('config')">⚙️ 設定情報</button>
+        <button class="settings-tab-btn"         data-stab="system"   onclick="showSettingsTab('system')">🔧 システム</button>
+      </div>
+
+      <!-- ── MEMORY タブ ── -->
+      <div class="settings-tab-content active" id="stab-memory">
+        <div class="card">
+          <div class="card-header"><span class="icon">📝</span> MEMORY.md エディタ</div>
+          <label class="settings-label">システムメモリの内容を編集できます。保存すると即座に反映されます。</label>
+          <textarea class="memory-editor" id="memory-editor" placeholder="MEMORY.md を読み込み中..."></textarea>
+          <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
+            <button class="btn btn-primary" onclick="saveMemory()">💾 保存</button>
+            <button class="btn btn-secondary" onclick="loadMemory()">↺ リロード</button>
+            <span class="save-status" id="memory-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 連絡先 タブ ── -->
+      <div class="settings-tab-content" id="stab-contacts">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <span style="font-size:12px;color:var(--text-dim);">優先度を変更すると contacts.md を即座に更新します</span>
+          <button class="btn btn-secondary" style="font-size:11px;" onclick="refreshSettingsContacts()">↺ リロード</button>
+        </div>
+        <div id="settings-contacts-wrap">
+          <div class="empty-state"><div class="empty-icon">👥</div>連絡先を読み込み中...</div>
+        </div>
+      </div>
+
+      <!-- ── 設定情報 タブ ── -->
+      <div class="settings-tab-content" id="stab-config">
+        <div class="card">
+          <div class="card-header"><span class="icon">⚙️</span> 設定情報（読み取り専用）</div>
+          <p style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">APIキー等の機密情報はマスクされています</p>
+          <div id="config-display">
+            <div class="empty-state">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── システム タブ ── -->
+      <div class="settings-tab-content" id="stab-system">
+        <div class="card">
+          <div class="card-header"><span class="icon">🔧</span> システム操作</div>
+
+          <button class="system-btn" onclick="triggerCheck()">
+            <span class="system-btn-icon">🔄</span>
+            <div>
+              <div>メール再チェック実行</div>
+              <div class="system-btn-desc">定期チェック待機をキャンセルして即座にメールチェックを実行します</div>
+            </div>
+          </button>
+
+          <button class="system-btn danger" onclick="resetLearning()">
+            <span class="system-btn-icon">📊</span>
+            <div>
+              <div>学習データリセット</div>
+              <div class="system-btn-desc">contacts.md の自動学習済み連絡先セクションをリセットします（元に戻せません）</div>
+            </div>
+          </button>
+        </div>
+      </div>
+
+    </div><!-- /settings -->
+
+  </main>
+</div>
+
+<!-- Draft modal -->
+<div class="modal-overlay" id="draft-modal">
+  <div class="modal">
+    <div class="modal-title" id="modal-subject"></div>
+    <div class="modal-body" id="modal-draft"></div>
+    <button class="modal-close" onclick="closeModal()">閉じる</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+  // ─── 状態 ───
+  let _pendingEmails = [];
+  let _lastStatus = {};
+  let _contactsLoaded = false;
+  let _memoryLoaded = false;
+  let _currentMailTab = null;
+  let _mailEmails = [];
+  let _mailSearchText = '';
+  let _settingsContactsLoaded = false;
+  let _settingsConfigLoaded = false;
+
+  // ─── 時計 ───
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      now.toLocaleTimeString('ja-JP', { hour12: false });
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ─── ビュー切替 ───
+  function showView(id, navEl) {
+    document.querySelectorAll('.view').forEach(v => v.hidden = true);
+    const target = document.getElementById('view-' + id);
+    if (target) target.hidden = false;
+
+    document.querySelectorAll('.nav-item[data-view]').forEach(n => n.classList.remove('active'));
+    if (navEl) navEl.classList.add('active');
+
+    if (id === 'contacts' && !_contactsLoaded) {
+      fetchContacts();
+    }
+    if (id === 'settings' && !_memoryLoaded) {
+      loadMemory();
+    }
+    if (id === 'calendar') {
+      updateCalDate();
+    }
+    if (id === 'mail') {
+      fetchMailTab(_currentMailTab || 'pending');
+    }
+  }
+
+  // ─── ステータスポーリング (5秒) ───
+  async function fetchStatus() {
+    try {
+      const res = await fetch('/api/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      _lastStatus = data;
+      _pendingEmails = data.pending_emails || [];
+
+      document.getElementById('stat-processed').textContent = data.processed_count || 0;
+      document.getElementById('stat-pending').textContent = data.pending_count || 0;
+      document.getElementById('stat-discord').textContent = data.discord_count || 0;
+      document.getElementById('nav-pending-count').textContent = data.pending_count || 0;
+
+      renderDashPendingPreview(data.pending_emails || []);
+      renderTimelineIn('dash-calendar-timeline', data.today_events || [], false);
+      renderTimelineIn('cal-full-timeline', data.today_events || [], true);
+
+      // 承認待ちタブが表示中の場合はカウントバッジを更新
+      const countEl = document.getElementById('tab-count-pending');
+      if (countEl) countEl.textContent = data.pending_count || 0;
+
+    } catch (e) {
+      console.warn('fetchStatus error', e);
+    }
+  }
+
+  // ─── API 使用量ポーリング (30秒) ───
+  async function fetchApiUsage() {
+    try {
+      const res = await fetch('/api/api-usage');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderApiUsage(data.realtime || {});
+    } catch (e) {
+      console.warn('fetchApiUsage error', e);
+    }
+  }
+
+  function renderApiUsage(realtime) {
+    const dailyCount  = realtime.daily_count  || 0;
+    const dailyRemain = realtime.daily_remaining != null ? realtime.daily_remaining : (1500 - dailyCount);
+    const minuteCount = realtime.minute_count || 0;
+
+    const dailyLimit  = 1500;
+    const minuteLimit = 15;
+
+    const dailyPct  = Math.min(100, Math.round(dailyCount  / dailyLimit  * 100));
+    const minutePct = Math.min(100, Math.round(minuteCount / minuteLimit * 100));
+
+    document.getElementById('gemini-daily-count').textContent  = `${dailyCount} / ${dailyLimit}`;
+    document.getElementById('gemini-minute-count').textContent = `${minuteCount} / ${minuteLimit}`;
+    document.getElementById('api-remaining').textContent       = `残り: ${dailyRemain} リクエスト / 日`;
+
+    const dbar = document.getElementById('gemini-daily-bar');
+    dbar.style.width = dailyPct + '%';
+    dbar.className = 'progress-fill' + (dailyPct > 80 ? ' danger' : dailyPct > 50 ? ' warn' : '');
+
+    const mbar = document.getElementById('gemini-minute-bar');
+    mbar.style.width = minutePct + '%';
+    mbar.className = 'progress-fill' + (minutePct > 80 ? ' danger' : minutePct > 50 ? ' warn' : '');
+  }
+
+  // ─── ダッシュボード: 承認待ちプレビュー ───
+  function renderDashPendingPreview(emails) {
+    const el = document.getElementById('dash-pending-preview');
+    if (!emails.length) {
+      el.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div>承認待ちメールはありません</div>`;
+      return;
+    }
+    const preview = emails.slice(0, 3);
+    el.innerHTML = `
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">${emails.length} 件の承認待ち</div>
+      ${preview.map(m => `
+        <div class="pending-preview-item">
+          <div class="pending-preview-subject">${esc(m.subject)}</div>
+          <div class="pending-preview-sender">${esc(m.sender)}</div>
+        </div>
+      `).join('')}
+      ${emails.length > 3 ? `<div style="font-size:11px;color:var(--text-dim);padding-top:8px;">他 ${emails.length - 3} 件...</div>` : ''}
+    `;
+  }
+
+  // ─── タイムライン描画 ───
+  function renderTimelineIn(elId, events, showAttendees) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    if (!events.length) {
+      el.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div>今日の予定はありません</div>`;
+      return;
+    }
+    el.innerHTML = events.map(ev => {
+      const attendeeSub = (showAttendees && ev.attendees && ev.attendees.length > 1)
+        ? `<div class="timeline-sub">👥 参加者 ${ev.attendees.length}名</div>` : '';
+      return `
+        <div class="timeline-item">
+          <div class="timeline-time">${ev.is_all_day ? '終日' : (ev.start || '--:--')}</div>
+          <div class="timeline-dot ${ev.is_all_day ? 'allday' : ''}"></div>
+          <div class="timeline-content">
+            <div class="timeline-title">${esc(ev.title)}</div>
+            ${ev.location ? `<div class="timeline-sub">📍 ${esc(ev.location)}</div>` : ''}
+            ${!ev.is_all_day && ev.end ? `<div class="timeline-sub">〜 ${ev.end}</div>` : ''}
+            ${attendeeSub}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // ─── カレンダービュー日付ラベル ───
+  function updateCalDate() {
+    const today = new Date();
+    const label = today.toLocaleDateString('ja-JP', { year:'numeric', month:'long', day:'numeric', weekday:'short' });
+    document.getElementById('cal-date-label').textContent = label + ' の予定';
+  }
+
+  // ─── カテゴリタグ ───
+  function getCategoryTag(cat) {
+    const map = {
+      'urgent': ['urgent', '緊急'],
+      'normal': ['normal', '通常'],
+      'info':   ['info-tag', '情報'],
+      'spam':   ['spam', 'スパム'],
+    };
+    const [cls, label] = map[cat] || ['info-tag', cat || '-'];
+    return `<span class="category-tag ${cls}">${label}</span>`;
+  }
+
+  // ─── 状態タグ ───
+  function getStatusTag(status) {
+    const map = {
+      'pending':   ['pending',   '承認待ち'],
+      'approved':  ['approved',  '送信済み'],
+      'rejected':  ['rejected',  '却下'],
+      'read_only': ['read_only', '閲覧のみ'],
+    };
+    const [cls, label] = map[status] || ['pending', status || '-'];
+    return `<span class="status-tag ${cls}">${label}</span>`;
+  }
+
+  // ─── メールタブ取得 ───
+  async function fetchMailTab(tab) {
+    _currentMailTab = tab;
+    _mailSearchText = document.getElementById('mail-search')?.value || '';
+
+    document.querySelectorAll('[data-tab]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+
+    const tbody = document.getElementById('mail-tbody');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">読み込み中...</div></td></tr>`;
+    }
+
+    try {
+      let emails = [];
+
+      if (tab === 'pending') {
+        const res = await fetch('/api/emails/pending');
+        if (res.ok) emails = await res.json();
+      } else if (tab === 'all') {
+        const res = await fetch('/api/emails');
+        if (res.ok) emails = await res.json();
+      } else if (tab === 'reply_needed') {
+        const res = await fetch('/api/emails');
+        if (res.ok) {
+          const all = await res.json();
+          emails = all.filter(m => m.category === 'urgent' || m.category === 'normal');
+        }
+      } else if (tab === 'read_only') {
+        const res = await fetch('/api/emails?status=read_only');
+        if (res.ok) emails = await res.json();
+      } else if (tab === 'rejected') {
+        const res = await fetch('/api/emails?status=rejected');
+        if (res.ok) emails = await res.json();
+      }
+
+      _mailEmails = emails;
+      const countEl = document.getElementById('tab-count-' + tab);
+      if (countEl) countEl.textContent = emails.length;
+
+      const searchVal = document.getElementById('mail-search')?.value || '';
+      const toRender = searchVal
+        ? emails.filter(m =>
+            (m.subject || '').toLowerCase().includes(searchVal.toLowerCase()) ||
+            (m.sender  || '').toLowerCase().includes(searchVal.toLowerCase()))
+        : emails;
+      renderMailTable(toRender);
+
+    } catch (e) {
+      console.warn('fetchMailTab error', e);
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">読み込みに失敗しました</div></td></tr>`;
+      }
+    }
+  }
+
+  function filterMailTable(searchText) {
+    _mailSearchText = searchText;
+    if (!_mailEmails.length) return;
+    const lower = searchText.toLowerCase();
+    const filtered = lower
+      ? _mailEmails.filter(m =>
+          (m.subject || '').toLowerCase().includes(lower) ||
+          (m.sender  || '').toLowerCase().includes(lower))
+      : _mailEmails;
+    renderMailTable(filtered);
+  }
+
+  function renderMailTable(emails) {
+    const tbody = document.getElementById('mail-tbody');
+    if (!tbody) return;
+
+    if (!emails.length) {
+      tbody.innerHTML = `<tr><td colspan="6">
+        <div class="empty-state"><div class="empty-icon">📭</div>メールがありません</div>
+      </td></tr>`;
+      return;
+    }
+
+    const isPendingTab = _currentMailTab === 'pending';
+
+    tbody.innerHTML = emails.map(m => {
+      // pending タブは /api/emails/pending から返るフィールド（id, subject, sender, category, draft, body_preview）
+      // DB タブは DB フィールド（message_id, subject, sender, category, reply_draft, body_preview, status, created_at）
+      const id         = m.id || m.message_id || '';
+      const subject    = m.subject    || '';
+      const sender     = m.sender     || '';
+      const category   = m.category   || '';
+      const status     = m.status     || (isPendingTab ? 'pending' : '');
+      const draft      = m.draft      !== undefined ? m.draft      : (m.reply_draft || '');
+      const preview    = m.body_preview || '';
+      const dateStr    = m.created_at ? m.created_at.slice(0, 16).replace('T', ' ') : (m.date || '');
+
+      const isActionable = isPendingTab || status === 'pending';
+      const draftReadonly = isActionable ? '' : 'readonly';
+
+      const actionBtns = isActionable ? `
+        <div class="btn-group" style="margin-top:10px;">
+          <button class="btn" style="font-size:11px;background:rgba(124,92,191,0.2);color:var(--accent);border:1px solid rgba(124,92,191,0.3);"
+              onclick="saveEditedDraft('${esc(id)}');event.stopPropagation()">✏️ 保存</button>
+          <button class="btn btn-approve"
+              onclick="saveAndApprove('${esc(id)}');event.stopPropagation()">✅ 承認</button>
+          <button class="btn btn-reject"
+              onclick="rejectMail('${esc(id)}');event.stopPropagation()">❌ 却下</button>
+          <button class="btn btn-secondary" style="font-size:11px;"
+              onclick="dismissMail('${esc(id)}');event.stopPropagation()">📖 閲覧のみ</button>
+        </div>
+      ` : '';
+
+      return `
+        <tr id="row-${esc(id)}" class="mail-row" onclick="toggleAccordion('${esc(id)}')">
+          <td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${esc(dateStr)}</td>
+          <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;"
+              title="${esc(sender)}">${esc(sender)}</td>
+          <td class="subject-cell" title="${esc(subject)}">${esc(subject)}</td>
+          <td>${getCategoryTag(category)}</td>
+          <td>${getStatusTag(status)}</td>
+          <td style="text-align:center;"><span class="expand-arrow">▼</span></td>
+        </tr>
+        <tr id="detail-${esc(id)}" class="accordion-detail">
+          <td colspan="6">
+            <div style="padding:12px 16px;">
+              ${preview ? `<div class="body-preview">${esc(preview)}</div>` : ''}
+              ${draft !== '' || isActionable ? `
+                <div style="margin-top:8px;font-size:11px;color:var(--text-dim);">返信案</div>
+                <textarea class="draft-ta" id="draft-ta-${esc(id)}" ${draftReadonly}>${esc(draft)}</textarea>
+                ${actionBtns}
+              ` : ''}
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function toggleAccordion(id) {
+    const detail = document.getElementById('detail-' + id);
+    const row    = document.getElementById('row-'    + id);
+    if (!detail) return;
+    const isOpen = detail.classList.contains('open');
+
+    // 他のアコーディオンを閉じる
+    document.querySelectorAll('.accordion-detail.open').forEach(el => {
+      el.classList.remove('open');
+      const sibRow = document.getElementById('row-' + el.id.replace('detail-', ''));
+      if (sibRow) sibRow.classList.remove('expanded');
+    });
+
+    if (!isOpen) {
+      detail.classList.add('open');
+      if (row) row.classList.add('expanded');
+    }
+  }
+
+  // ─── 返信案インライン編集 ───
+  async function saveEditedDraft(emailId) {
+    const ta = document.getElementById('draft-ta-' + emailId);
+    if (!ta) return;
+    try {
+      const res = await fetch('/api/emails/' + encodeURIComponent(emailId) + '/edit-reply', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft: ta.value }),
+      });
+      if (res.ok) {
+        showToast('✏️ 返信案を保存しました');
+      } else {
+        const d = await res.json();
+        alert('保存エラー: ' + (d.detail || '失敗'));
+      }
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+    }
+  }
+
+  async function saveAndApprove(emailId) {
+    const ta = document.getElementById('draft-ta-' + emailId);
+    if (ta) {
+      try {
+        await fetch('/api/emails/' + encodeURIComponent(emailId) + '/edit-reply', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ draft: ta.value }),
+        });
+      } catch (e) {}
+    }
+    await approveMail(emailId);
+  }
+
+  // ─── 承認 / 却下 / 閲覧のみ ───
+  async function approveMail(emailId) {
+    const row    = document.getElementById('row-'    + emailId);
+    const detail = document.getElementById('detail-' + emailId);
+    if (!row) return;
+    const btns = row.querySelectorAll('.btn');
+    btns.forEach(b => b.disabled = true);
+
+    try {
+      const res = await fetch('/api/approve/' + encodeURIComponent(emailId), { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        alert('エラー: ' + (data.detail || '送信失敗'));
+        btns.forEach(b => b.disabled = false);
+        return;
+      }
+      row.classList.add('removing');
+      setTimeout(() => {
+        row.remove();
+        if (detail) detail.remove();
+        fetchStatus();
+        if (_currentMailTab) fetchMailTab(_currentMailTab);
+      }, 300);
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+      btns.forEach(b => b.disabled = false);
+    }
+  }
+
+  async function rejectMail(emailId) {
+    if (!confirm('このメールの返信案を却下しますか？')) return;
+    const row    = document.getElementById('row-'    + emailId);
+    const detail = document.getElementById('detail-' + emailId);
+    if (!row) return;
+    const btns = row.querySelectorAll('.btn');
+    btns.forEach(b => b.disabled = true);
+
+    try {
+      const res = await fetch('/api/reject/' + encodeURIComponent(emailId), { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json();
+        alert('エラー: ' + (data.detail || '却下失敗'));
+        btns.forEach(b => b.disabled = false);
+        return;
+      }
+      row.classList.add('removing');
+      setTimeout(() => {
+        row.remove();
+        if (detail) detail.remove();
+        fetchStatus();
+        if (_currentMailTab) fetchMailTab(_currentMailTab);
+      }, 300);
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+      btns.forEach(b => b.disabled = false);
+    }
+  }
+
+  async function dismissMail(emailId) {
+    const row    = document.getElementById('row-'    + emailId);
+    const detail = document.getElementById('detail-' + emailId);
+    try {
+      const res = await fetch('/api/emails/' + encodeURIComponent(emailId) + '/dismiss', { method: 'POST' });
+      if (!res.ok) {
+        const d = await res.json();
+        alert('エラー: ' + (d.detail || '失敗'));
+        return;
+      }
+      if (row) {
+        row.classList.add('removing');
+        setTimeout(() => {
+          row.remove();
+          if (detail) detail.remove();
+          fetchStatus();
+          if (_currentMailTab) fetchMailTab(_currentMailTab);
+        }, 300);
+      }
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+    }
+  }
+
+  // ─── Draft モーダル ───
+  function showDraft(emailId, subject, draft) {
+    document.getElementById('modal-subject').textContent = subject;
+    document.getElementById('modal-draft').textContent = draft;
+    document.getElementById('draft-modal').classList.add('open');
+  }
+
+  function closeModal() {
+    document.getElementById('draft-modal').classList.remove('open');
+  }
+
+  document.getElementById('draft-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+  });
+
+  // ─── 連絡先（連絡先ビュー） ───
+  async function fetchContacts() {
+    try {
+      const res = await fetch('/api/contacts');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderContacts(data.contacts || {});
+      _contactsLoaded = true;
+    } catch (e) {
+      console.warn('fetchContacts error', e);
+    }
+  }
+
+  function renderContacts(contacts) {
+    const wrap = document.getElementById('contacts-grid-wrap');
+    const entries = Object.entries(contacts);
+    if (!entries.length) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">👥</div>連絡先が登録されていません</div>`;
+      return;
+    }
+
+    wrap.innerHTML = `<div class="contacts-grid">` +
+      entries.map(([name, info]) => {
+        const priority = info.priority || 'low';
+        const pBadge = {
+          '高': 'high', '中': 'medium', '低': 'low',
+          'high': 'high', 'medium': 'medium', 'low': 'low',
+        }[priority] || 'low';
+        const pLabel = { 'high': '優先: 高', 'medium': '優先: 中', 'low': '優先: 低' }[pBadge];
+        return `
+          <div class="contact-card">
+            <div class="contact-name">${esc(name)}</div>
+            <div class="contact-email">${esc(info.email || '-')}</div>
+            <span class="priority-badge ${pBadge}">${esc(pLabel)}</span>
+          </div>
+        `;
+      }).join('') +
+    `</div>`;
+  }
+
+  // ─── MEMORY.md 設定 ───
+  async function loadMemory() {
+    const ta = document.getElementById('memory-editor');
+    const st = document.getElementById('memory-status');
+    st.textContent = '読み込み中...';
+    st.className = 'save-status';
+    try {
+      const res = await fetch('/api/memory');
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      ta.value = data.content || '';
+      st.textContent = '読み込み完了';
+      st.className = 'save-status ok';
+      _memoryLoaded = true;
+      setTimeout(() => { st.textContent = ''; }, 2000);
+    } catch (e) {
+      st.textContent = '読み込み失敗: ' + e;
+      st.className = 'save-status err';
+    }
+  }
+
+  async function saveMemory() {
+    const ta = document.getElementById('memory-editor');
+    const st = document.getElementById('memory-status');
+    st.textContent = '保存中...';
+    st.className = 'save-status';
+    try {
+      const res = await fetch('/api/memory', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: ta.value }),
+      });
+      if (!res.ok) throw new Error(res.status);
+      st.textContent = '✅ 保存しました';
+      st.className = 'save-status ok';
+      setTimeout(() => { st.textContent = ''; }, 3000);
+    } catch (e) {
+      st.textContent = '❌ 保存失敗: ' + e;
+      st.className = 'save-status err';
+    }
+  }
+
+  // ─── 設定タブ切替 ───
+  function showSettingsTab(tab) {
+    document.querySelectorAll('[data-stab]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.stab === tab);
+    });
+    document.querySelectorAll('.settings-tab-content').forEach(el => {
+      el.classList.toggle('active', el.id === 'stab-' + tab);
+    });
+
+    if (tab === 'contacts' && !_settingsContactsLoaded) {
+      fetchSettingsContacts();
+    }
+    if (tab === 'config' && !_settingsConfigLoaded) {
+      fetchConfig();
+    }
+  }
+
+  // ─── 設定タブ: 連絡先 ───
+  async function fetchSettingsContacts() {
+    try {
+      const res = await fetch('/api/contacts');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderSettingsContacts(data.contacts || {});
+      _settingsContactsLoaded = true;
+    } catch (e) {
+      console.warn('fetchSettingsContacts error', e);
+    }
+  }
+
+  function refreshSettingsContacts() {
+    _settingsContactsLoaded = false;
+    document.getElementById('settings-contacts-wrap').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">👥</div>連絡先を読み込み中...</div>`;
+    fetchSettingsContacts();
+  }
+
+  function renderSettingsContacts(contacts) {
+    const wrap = document.getElementById('settings-contacts-wrap');
+    const entries = Object.entries(contacts);
+    if (!entries.length) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-icon">👥</div>連絡先が登録されていません</div>`;
+      return;
+    }
+
+    wrap.innerHTML = `<div class="contacts-grid">` +
+      entries.map(([name, info]) => {
+        const priority = info.priority || '中';
+        const pBadge = { '高': 'high', '中': 'medium', '低': 'low',
+                         'high': 'high', 'medium': 'medium', 'low': 'low' }[priority] || 'medium';
+        const pVal   = { 'high': '高', 'medium': '中', 'low': '低' }[pBadge] || '中';
+        const emailAddr = info.email || name;
+        return `
+          <div class="contact-card">
+            <div class="contact-name">${esc(name)}</div>
+            <div class="contact-email">${esc(emailAddr)}</div>
+            <select class="priority-sel"
+                    onchange="updateContactPriority('${esc(emailAddr)}', this.value)">
+              <option value="高" ${pVal === '高' ? 'selected' : ''}>高優先</option>
+              <option value="中" ${pVal === '中' ? 'selected' : ''}>中優先</option>
+              <option value="低" ${pVal === '低' ? 'selected' : ''}>低優先</option>
+            </select>
+          </div>
+        `;
+      }).join('') +
+    `</div>`;
+  }
+
+  async function updateContactPriority(email, priority) {
+    try {
+      const res = await fetch('/api/contacts/' + encodeURIComponent(email) + '/priority', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
+      });
+      if (res.ok) {
+        showToast('✅ 優先度を更新しました: ' + priority);
+      } else {
+        const d = await res.json();
+        alert('エラー: ' + (d.detail || '更新失敗'));
+      }
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+    }
+  }
+
+  // ─── 設定タブ: 設定情報 ───
+  async function fetchConfig() {
+    const el = document.getElementById('config-display');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/config');
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      renderConfig(data);
+      _settingsConfigLoaded = true;
+    } catch (e) {
+      el.innerHTML = `<div class="empty-state">設定の読み込みに失敗しました</div>`;
+    }
+  }
+
+  function renderConfig(data) {
+    const el = document.getElementById('config-display');
+    if (!el) return;
+
+    function renderRows(obj) {
+      return Object.entries(obj).map(([k, v]) => {
+        const val = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
+        return `<tr><td>${esc(k)}</td><td>${esc(val)}</td></tr>`;
+      }).join('');
+    }
+
+    let html = '';
+    for (const [key, val] of Object.entries(data)) {
+      if (typeof val === 'object' && val !== null) {
+        html += `<div class="config-section-header">${esc(key)}</div>
+                 <table class="config-table"><tbody>${renderRows(val)}</tbody></table>`;
+      } else {
+        html += `<table class="config-table"><tbody>
+                   <tr><td>${esc(key)}</td><td>${esc(String(val ?? ''))}</td></tr>
+                 </tbody></table>`;
+      }
+    }
+    el.innerHTML = html || '<div class="empty-state">設定なし</div>';
+  }
+
+  // ─── 設定タブ: システム ───
+  async function triggerCheck() {
+    try {
+      const res = await fetch('/api/trigger-check', { method: 'POST' });
+      if (res.ok) {
+        showToast('🔄 メールチェックをトリガーしました');
+      } else {
+        const d = await res.json();
+        alert('エラー: ' + (d.detail || '失敗'));
+      }
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+    }
+  }
+
+  async function resetLearning() {
+    if (!confirm('学習データをリセットしますか？\ncontacts.md の自動学習済みセクションが消去されます。この操作は元に戻せません。')) return;
+    try {
+      const res = await fetch('/api/reset-learning', { method: 'POST' });
+      if (res.ok) {
+        showToast('📊 学習データをリセットしました');
+        _settingsContactsLoaded = false;
+      } else {
+        const d = await res.json();
+        alert('エラー: ' + (d.detail || '失敗'));
+      }
+    } catch (e) {
+      alert('ネットワークエラー: ' + e);
+    }
+  }
+
+  // ─── Toast ───
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.style.display = 'block';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.display = 'none'; }, 3000);
+  }
+
+  // ─── WebSocket ───
+  function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+    const dot = document.getElementById('ws-dot');
+    const label = document.getElementById('ws-label');
+
+    ws.onopen = () => {
+      dot.classList.add('connected');
+      label.textContent = '接続中';
+    };
+
+    ws.onmessage = (e) => {
+      try {
+        const entry = JSON.parse(e.data);
+        prependFeedItem(entry);
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      dot.classList.remove('connected');
+      label.textContent = '切断 — 再接続中...';
+      setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = () => ws.close();
+  }
+
+  function prependFeedItem(entry) {
+    const feed = document.getElementById('live-feed');
+    const empty = feed.querySelector('.empty-state');
+    if (empty) feed.innerHTML = '';
+
+    const div = document.createElement('div');
+    div.className = 'feed-item';
+    div.innerHTML = `
+      <span class="feed-time">${esc(entry.timestamp || '')}</span>
+      <span class="feed-msg">${esc(entry.message || '')}</span>
+      <span class="feed-type ${esc(entry.type || 'info')}">${esc(entry.type || 'info')}</span>
+    `;
+
+    feed.insertBefore(div, feed.firstChild);
+    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+  }
+
+  // ─── エスケープ ───
+  function esc(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ─── 初期化 ───
+  fetchStatus();
+  fetchApiUsage();
+  setInterval(fetchStatus, 5000);
+  setInterval(fetchApiUsage, 30000);
+  connectWS();
+</script>
+</body>
+</html>
