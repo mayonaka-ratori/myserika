@@ -276,8 +276,9 @@ async def check_and_process_emails(
         # ステップ1: 未読メールを取得
         emails = get_unread_emails(gmail_service)
 
-        # 最終チェック時刻を更新
+        # 最終チェック時刻を更新 / update last check time
         update_state(STATE_PATH, "最終チェック時刻", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        telegram_app.bot_data["last_check_time"] = datetime.now()
 
         if not emails:
             logger.info("新着メールなし")
@@ -519,6 +520,9 @@ async def main_loop(config: dict) -> None:
         "_manual_check_event": _manual_check_event,
         "config": config,
         "discord_client": None,
+        "memory_path": str(MEMORY_PATH),
+        # /status コマンド用: 起動時刻を記録 / for /status command: record start time
+        "start_time": datetime.now(),
     })
     telegram_app.bot_data["calendar_service"] = calendar_service
     telegram_app.bot_data["calendar_client"] = calendar_client

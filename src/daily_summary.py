@@ -17,60 +17,14 @@ from datetime import datetime, timedelta, timezone
 
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton
 from classifier import extract_email_address
+from gmail_client import _fetch_message_headers, _extract_name_and_email
+from gemini_client import _call_model
 
 logger = logging.getLogger(__name__)
 
 # JST タイムゾーン（固定オフセット +9 時間）
 JST = timezone(timedelta(hours=9))
 WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
-
-
-def get_today_events(calendar_service) -> list[dict] | None:
-    """
-    Google Calendar API から今日（JST）のイベントを取得して返す。
-    戻り値: [{ "start": "HH:MM" | "終日", "title": str, "location": str }, ...]
-    エラー時は None を返す（"予定なし" と "取得失敗" を区別するため）。
-    """
-    if calendar_service is None:
-        return None
-
-    try:
-        now = datetime.now(JST)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
-
-        events_result = calendar_service.events().list(
-            calendarId="primary",
-            timeMin=today_start.isoformat(),
-            timeMax=today_end.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
-
-        items = events_result.get("items", [])
-        events = []
-        for item in items:
-            start = item.get("start", {})
-            start_str = start.get("dateTime") or start.get("date", "")
-
-            if "T" in start_str:
-                # 時刻付きイベント: JST に変換して HH:MM 表示
-                dt = datetime.fromisoformat(start_str).astimezone(JST)
-                time_display = dt.strftime("%H:%M")
-            else:
-                time_display = "終日"
-
-            events.append({
-                "start": time_display,
-                "title": item.get("summary", "（タイトルなし）"),
-                "location": item.get("location", ""),
-            })
-
-        return events
-
-    except Exception as e:
-        logger.error(f"Google Calendar 取得エラー: {e}")
-        return None
 
 
 def _format_attendees(attendees: list[str], contacts: dict, max_display: int = 3) -> str:
@@ -181,8 +135,6 @@ def _get_unread_summary(gmail_service, contacts: dict) -> dict:
     昨日以降の未読メールを集計する内部ヘルパー。
     戻り値: { "total": int, "important_senders": list[str] }
     """
-    from gmail_client import _fetch_message_headers, _extract_name_and_email
-
     try:
         result = gmail_service.users().messages().list(
             userId="me",
@@ -219,8 +171,6 @@ def _get_todo_suggestions(gemini_client, pending_approvals: dict) -> list[str]:
         return []
 
     try:
-        from gemini_client import _call_model
-
         items_text = "\n".join(
             f"- 件名: {info['email'].get('subject', '')} "
             f"| 送信者: {info['email'].get('sender', '')} "

@@ -29,3 +29,18 @@
 - ❌ 却下: 返信案を破棄（メールは未読のまま）
 - 📖 閲覧のみ: 返信不要と判断した場合。メールを既読化して承認待ちから削除。
   修正内容（要返信→閲覧のみ）をMEMORY.mdの「分類修正ログ」セクションに記録する
+
+## BotFather コマンドリスト / BotFather Command List
+
+```
+status - システム状態 / System status
+pending - 承認待ちメール / Pending emails
+search - メール検索 / Search emails
+schedule - 今日の予定 / Today's schedule
+stats - 統計レポート / Statistics
+contacts - 重要連絡先 / Important contacts
+check - メール即時チェック / Check emails now
+quiet - 通知一時停止 / Pause notifications
+resume - 通知再開 / Resume notifications
+help - コマンド一覧 / Command list
+```

@@ -8,7 +8,6 @@ python-telegram-bot v20+ の非同期 API を使用する。
 import html
 import logging
 import os
-import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot
 from telegram.ext import (
@@ -19,6 +18,9 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from gmail_client import send_email, mark_as_read
+from gemini_client import get_api_usage, refine_reply_draft
+from classifier import extract_email_address
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,11 @@ def build_application(bot_token: str) -> Application:
     """
     app = Application.builder().token(bot_token).build()
 
-    # コマンドハンドラー
-    app.add_handler(CommandHandler("status", handle_status_command))
+    # コマンドハンドラー / command handlers
+    app.add_handler(CommandHandler("status",  handle_status_command))
+    app.add_handler(CommandHandler("help",    handle_help_command))
+    app.add_handler(CommandHandler("pending", handle_pending_command))
+    app.add_handler(CommandHandler("check",   handle_check_command))
 
     # インラインキーボードのコールバックハンドラー
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -51,21 +56,12 @@ def build_application(bot_token: str) -> Application:
     return app
 
 
-def _extract_email_address(sender: str) -> str:
-    """
-    "表示名 <email@example.com>" 形式からメールアドレスを抽出する内部ヘルパー。
-    """
-    m = re.search(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", sender)
-    return m.group() if m else sender.strip()
-
-
 def _build_api_usage_text(bot_data: dict) -> str:
     """API 使用量テキストを生成する内部ヘルパー。"""
     gemini_client = bot_data.get("gemini_client")
     if not gemini_client:
         return ""
     try:
-        from gemini_client import get_api_usage
         usage = get_api_usage(gemini_client)
         return (
             f"\n本日のAPI使用: {usage['daily_count']}回 "
@@ -77,23 +73,205 @@ def _build_api_usage_text(bot_data: dict) -> str:
         return ""
 
 
+async def handle_help_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /help コマンドで利用可能なコマンド一覧を表示する。
+    /help command: show the list of available commands
+    """
+    text = (
+        "🤖 <b>MY-SECRETARY コマンド一覧</b>\n\n"
+        "/status — システム状態・稼働時間・統計\n"
+        "/pending — 承認待ちメール一覧\n"
+        "/check — メールを今すぐチェック\n"
+        "/help — このヘルプを表示\n\n"
+        "<i>未実装（予定）:</i>\n"
+        "/search — メール検索\n"
+        "/schedule — 今日の予定\n"
+        "/stats — 統計レポート\n"
+        "/contacts — 重要連絡先\n"
+        "/quiet — 通知一時停止\n"
+        "/resume — 通知再開"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
 async def handle_status_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """
-    /status コマンドで現在の承認待ち返信案の件数と API 使用量を表示する。
+    /status コマンドでシステム状態・稼働時間・本日統計・API 使用量を表示する。
+    /status command: show system status, uptime, daily stats, and API usage
     """
-    pending = context.bot_data.get("pending_approvals", {})
-    awaiting = context.bot_data.get("awaiting_revision")
+    bot_data = context.bot_data
+    pending = bot_data.get("pending_approvals", {})
+    awaiting = bot_data.get("awaiting_revision")
     count = len(pending)
 
-    status_text = f"📊 <b>MY-SECRETARY ステータス</b>\n\n承認待ち返信案: {count} 件"
+    lines = ["📊 <b>MY-SECRETARY ステータス</b>\n"]
+
+    # 稼働時間 / uptime
+    start_time = bot_data.get("start_time")
+    if start_time:
+        try:
+            delta = datetime.now() - start_time
+            hours, rem = divmod(int(delta.total_seconds()), 3600)
+            minutes = rem // 60
+            lines.append(f"⏱ 稼働時間: {hours}時間{minutes}分")
+        except Exception:
+            pass
+
+    # 最終チェック時刻 / last check time
+    last_check = bot_data.get("last_check_time")
+    if last_check:
+        try:
+            lines.append(f"🕐 最終チェック: {last_check.strftime('%H:%M')}")
+        except Exception:
+            pass
+
+    lines.append(f"📬 承認待ち: {count} 件")
     if awaiting:
-        status_text += f"\n修正指示待ち: {awaiting}"
+        lines.append(f"✏️ 修正指示待ち: {awaiting}")
 
-    status_text += _build_api_usage_text(context.bot_data)
+    # 本日統計 / today's stats
+    db = bot_data.get("db")
+    if db:
+        try:
+            stats = await db.get_daily_stats()
+            total = stats.get("total_processed", 0)
+            approved = stats.get("approved", 0)
+            lines.append(f"📈 本日: {total}件処理 / {approved}件送信済み")
+        except Exception:
+            pass
 
-    await update.message.reply_text(status_text, parse_mode="HTML")
+    # Gemini API 使用量 / Gemini API usage
+    gemini_client = bot_data.get("gemini_client")
+    if gemini_client:
+        try:
+            usage = get_api_usage(gemini_client)
+            lines.append(
+                f"🤖 Gemini: {usage['daily_count']}回/日 "
+                f"（残り{usage['daily_remaining']:,}回）"
+            )
+        except Exception:
+            pass
+
+    # Discord 接続状態 / Discord connection status
+    discord_client = bot_data.get("discord_client")
+    if discord_client is not None:
+        lines.append("💬 Discord: 接続中")
+    else:
+        lines.append("💬 Discord: 未接続")
+
+    # 次の予定（12時間以内）/ next calendar event within 12 hours
+    calendar_client = bot_data.get("calendar_client")
+    if calendar_client is not None:
+        try:
+            events = calendar_client.get_upcoming_events(hours=12)
+            if events:
+                ev = events[0]
+                ev_time = ev["start"].strftime("%H:%M")
+                ev_title = html.escape(ev["title"])
+                lines.append(f"📅 次の予定: {ev_time} {ev_title}")
+        except Exception:
+            pass
+
+    # Web UI URL
+    config = bot_data.get("config", {})
+    web_port = config.get("web", {}).get("port", 8080)
+    lines.append(f"🌐 Web UI: http://localhost:{web_port}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def handle_pending_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /pending コマンドで承認待ちメール一覧をインラインボタン付きで表示する。
+    /pending command: show pending emails with approve/reject inline buttons
+    """
+    pending = context.bot_data.get("pending_approvals", {})
+    if not pending:
+        await update.message.reply_text("✅ 承認待ちはありません")
+        return
+
+    for email_id, info in list(pending.items()):
+        email = info.get("email", {})
+        subject = html.escape(email.get("subject", "（件名なし）"))
+        sender_addr = extract_email_address(email.get("sender", ""))
+        category = info.get("category", "")
+
+        text = (
+            f"✉️ <b>{subject}</b>\n"
+            f"差出人: {html.escape(sender_addr)}\n"
+            f"分類: {category}"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ 承認", callback_data=f"approve:{email_id}"),
+                InlineKeyboardButton("❌ 却下", callback_data=f"reject:{email_id}"),
+            ]
+        ])
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def handle_check_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /check コマンドでメールを即時チェックし、新着件数を報告する。
+    /check command: trigger immediate email check and report new mail count
+    """
+    bot_data = context.bot_data
+    recheck_fn = bot_data.get("_recheck_fn")
+    if not recheck_fn:
+        await update.message.reply_text("⚠️ 再チェック機能が初期化されていません。")
+        return
+
+    await update.message.reply_text("🔄 チェック中...")
+
+    gmail_service = bot_data.get("gmail_service")
+    gemini_client = bot_data.get("gemini_client")
+    config = bot_data.get("config", {})
+    calendar_client = bot_data.get("calendar_client")
+    db = bot_data.get("db")
+
+    # 実行前の統計を取得 / get stats before check to calculate diff
+    stats_before = {}
+    if db:
+        try:
+            stats_before = await db.get_daily_stats()
+        except Exception:
+            pass
+
+    try:
+        await recheck_fn(
+            gmail_service, gemini_client, context.application, config,
+            calendar_client=calendar_client,
+        )
+    except Exception as e:
+        logger.error(f"/check 実行エラー: {e}")
+        await update.message.reply_text(
+            f"⚠️ チェック中にエラーが発生しました：{html.escape(str(e))}",
+            parse_mode="HTML",
+        )
+        return
+
+    # 実行後の統計差分から新着件数を算出 / calculate new mail count from stats diff
+    new_count = 0
+    if db:
+        try:
+            stats_after = await db.get_daily_stats()
+            new_count = (
+                stats_after.get("total_processed", 0)
+                - stats_before.get("total_processed", 0)
+            )
+        except Exception:
+            pass
+
+    await update.message.reply_text(f"✅ チェック完了：新着{new_count}件")
 
 
 async def send_notification(bot: Bot, chat_id: str, text: str) -> None:
@@ -277,10 +455,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_subject = f"Re: {original_subject}"
 
         # 宛先は元メールの送信者（From アドレス）
-        to_addr = _extract_email_address(email.get("sender", ""))
+        to_addr = extract_email_address(email.get("sender", ""))
 
         # Gmail 経由で送信
-        from gmail_client import send_email, mark_as_read
         gmail_service = bot_data.get("gmail_service")
         success = send_email(gmail_service, to=to_addr, subject=reply_subject, body=draft)
 
@@ -325,7 +502,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         info = pending[email_id]
         email = info["email"]
-        from gmail_client import mark_as_read
         gmail_service = bot_data.get("gmail_service")
         mark_as_read(gmail_service, email_id)
         del pending[email_id]
@@ -486,7 +662,6 @@ async def handle_text_message(
     await update.message.reply_text("返信案を修正中...")
 
     try:
-        from gemini_client import refine_reply_draft
         gemini_client = bot_data.get("gemini_client")
 
         # Gemini に修正を依頼
