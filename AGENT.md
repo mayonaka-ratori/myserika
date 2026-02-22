@@ -43,4 +43,7 @@ check - メール即時チェック / Check emails now
 quiet - 通知一時停止 / Pause notifications
 resume - 通知再開 / Resume notifications
 help - コマンド一覧 / Command list
+todo - タスク追加 / Add task
+tasks - タスク一覧 / Task list
+done - タスク完了 / Complete task
 ```

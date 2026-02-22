@@ -9,7 +9,7 @@ import html
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot
 from telegram.ext import (
@@ -25,6 +25,115 @@ from gemini_client import get_api_usage, refine_reply_draft
 from classifier import extract_email_address
 
 logger = logging.getLogger(__name__)
+
+# ── 日付パース / Date Parsing Helpers ─────────────────────────────────────
+
+_DATE_SPLIT_RE = re.compile(
+    r'\s+('
+    r'\d{4}-\d{2}-\d{2}'           # 2026-03-15
+    r'|\d{1,2}/\d{1,2}'            # 3/15
+    r'|\d{1,2}月\d{1,2}日'          # 3月15日
+    r'|明日|今日|明後日'
+    r'|来週[月火水木金土日]曜日?'
+    r'|来週'
+    r')$'
+)
+
+_WEEKDAY_MAP = {"月": 0, "火": 1, "水": 2, "木": 3, "金": 4, "土": 5, "日": 6}
+
+
+def _split_title_and_date(text: str) -> tuple[str, str]:
+    """
+    末尾の日付表現を分離してタイトルと日付文字列を返す。
+    Split trailing date expression from title text.
+    例: "書類準備 3/15" → ("書類準備", "3/15")
+    """
+    m = _DATE_SPLIT_RE.search(text)
+    if m:
+        return text[:m.start()].strip(), m.group(1)
+    return text.strip(), ""
+
+
+def _parse_due_date(text: str) -> str:
+    """
+    日本語・英語の日付表現を YYYY-MM-DD 文字列に変換する。
+    Parse Japanese/English date expression to YYYY-MM-DD string.
+    変換できない場合は空文字列を返す。/ Returns "" if unparseable.
+    """
+    text = text.strip()
+    today = date.today()
+
+    # YYYY-MM-DD / ISO format
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
+        return text
+
+    # M/D format → same or next year
+    m = re.fullmatch(r'(\d{1,2})/(\d{1,2})', text)
+    if m:
+        try:
+            d = date(today.year, int(m.group(1)), int(m.group(2)))
+            if d < today:
+                d = date(today.year + 1, int(m.group(1)), int(m.group(2)))
+            return d.isoformat()
+        except ValueError:
+            return ""
+
+    # M月D日 / Japanese format
+    m = re.fullmatch(r'(\d{1,2})月(\d{1,2})日', text)
+    if m:
+        try:
+            d = date(today.year, int(m.group(1)), int(m.group(2)))
+            if d < today:
+                d = date(today.year + 1, int(m.group(1)), int(m.group(2)))
+            return d.isoformat()
+        except ValueError:
+            return ""
+
+    # 相対表現 / Relative expressions
+    if text == "今日":
+        return today.isoformat()
+    if text == "明日":
+        return (today + timedelta(days=1)).isoformat()
+    if text == "明後日":
+        return (today + timedelta(days=2)).isoformat()
+
+    # 来週[曜日] / Next [weekday]
+    m = re.fullmatch(r'来週([月火水木金土日])曜日?', text)
+    if m:
+        target = _WEEKDAY_MAP[m.group(1)]
+        days = (target - today.weekday()) % 7 or 7
+        days += 7  # "来週" = next week
+        return (today + timedelta(days=days)).isoformat()
+
+    if text == "来週":
+        days = (7 - today.weekday()) % 7 or 7
+        return (today + timedelta(days=days)).isoformat()
+
+    return ""
+
+
+def _format_due_display(due_date: str) -> str:
+    """
+    DB の due_date 文字列を表示用テキストに変換する（残り日数付き）。
+    Convert DB due_date string to display text with days remaining.
+    """
+    if not due_date:
+        return "（期限なし）"
+    try:
+        today = date.today()
+        due = date.fromisoformat(due_date[:10])
+        delta = (due - today).days
+        label = f"{due.month}/{due.day}"
+        if delta < 0:
+            return f"（期限：{label} ⚠️期限切れ）"
+        if delta == 0:
+            return "（期限：今日）"
+        if delta == 1:
+            return "（期限：明日）"
+        return f"（期限：{label} 残り{delta}日）"
+    except (ValueError, TypeError):
+        return f"（期限：{due_date[:10]}）"
+
 
 # Telegram メッセージの最大文字数（余裕を持って設定）
 MAX_MESSAGE_LEN = 3800
@@ -52,6 +161,9 @@ def build_application(bot_token: str) -> Application:
     app.add_handler(CommandHandler("quiet",    handle_quiet_command))
     app.add_handler(CommandHandler("resume",   handle_resume_command))
     app.add_handler(CommandHandler("contacts", handle_contacts_command))
+    app.add_handler(CommandHandler("todo",   handle_todo_command))
+    app.add_handler(CommandHandler("tasks",  handle_tasks_command))
+    app.add_handler(CommandHandler("done",   handle_done_command))
 
     # インラインキーボードのコールバックハンドラー
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -99,7 +211,10 @@ async def handle_help_command(
         "/contacts — 重要連絡先一覧\n"
         "/quiet — 通知一時停止（例: /quiet 2 で2時間）\n"
         "/resume — 通知再開\n"
-        "/help — このヘルプを表示"
+        "/help — このヘルプを表示\n"
+        "/todo — タスク追加（例: /todo 確定申告 3/15）\n"
+        "/tasks — タスク一覧（/tasks urgent / today / overdue）\n"
+        "/done — タスク完了（例: /done 1）"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -510,6 +625,42 @@ async def send_notification(bot: Bot, chat_id: str, text: str) -> None:
         logger.error(f"Telegram 通知送信エラー: {e}")
 
 
+async def send_task_detection_notification(
+    bot: Bot,
+    chat_id: str,
+    task: dict,
+    source_label: str = "",
+) -> None:
+    """
+    自動抽出タスクの確認通知を Telegram に送信する。
+    Send task detection confirmation notification to Telegram.
+    task は DB 保存済み（id あり）。ユーザーが「❌ 無視」を押せば DB から削除する。
+    The task is already saved to DB; clicking "❌ 無視する" will delete it.
+    """
+    priority_icon = {
+        "urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"
+    }.get(task.get("priority", "medium"), "🟡")
+    due_display = _format_due_display(task.get("due_date", ""))
+    source_part = f"\n{html.escape(source_label)}" if source_label else ""
+
+    text = (
+        f"📌 <b>新しいタスクを検出</b>\n"
+        f"{priority_icon} {html.escape(task['title'])}"
+        f"{source_part}\n"
+        f"{due_display}"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
+        InlineKeyboardButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
+    ]])
+    try:
+        await bot.send_message(
+            chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"タスク検出通知送信エラー / Task detection notification error: {e}")
+
+
 async def send_email_summary(
     bot: Bot, chat_id: str, classified_emails: list[dict]
 ) -> None:
@@ -829,6 +980,73 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             del discord_client.pending_discord_messages[msg_key]
         await query.edit_message_text("👀 既読にしました。")
 
+    # ── タスクコールバック / Task Callbacks ────────────────────────────
+    elif data.startswith("task_done:"):
+        task_id = int(data.split(":", 1)[1])
+        db = context.bot_data.get("db")
+        if db:
+            task_list = context.bot_data.get("last_task_list", [])
+            task = next((t for t in task_list if t["id"] == task_id), None)
+            try:
+                await db.update_task_status(task_id, "done")
+                title = task["title"] if task else f"タスク#{task_id}"
+                await query.edit_message_text(f"✅ 完了：{html.escape(title)}", parse_mode="HTML")
+                if task:
+                    context.bot_data["last_task_list"] = [
+                        t for t in task_list if t["id"] != task_id
+                    ]
+            except Exception as e:
+                await query.answer(f"エラー: {e}")
+
+    elif data.startswith("task_del:"):
+        task_id = int(data.split(":", 1)[1])
+        db = context.bot_data.get("db")
+        if db:
+            task_list = context.bot_data.get("last_task_list", [])
+            task = next((t for t in task_list if t["id"] == task_id), None)
+            try:
+                await db.delete_task(task_id)
+                title = task["title"] if task else f"タスク#{task_id}"
+                await query.edit_message_text(f"🗑 削除：{html.escape(title)}", parse_mode="HTML")
+                if task:
+                    context.bot_data["last_task_list"] = [
+                        t for t in task_list if t["id"] != task_id
+                    ]
+            except Exception as e:
+                await query.answer(f"エラー: {e}")
+
+    elif data.startswith("task_edit:"):
+        # 編集モードに入る：次のテキストメッセージで新タイトルを受け取る
+        # Enter edit mode: the next text message will be the new title
+        task_id = int(data.split(":", 1)[1])
+        context.bot_data["awaiting_task_edit"] = task_id
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✏️ 新しいタイトルを入力してください。\nEnter the new task title:",
+        )
+
+    elif data.startswith("task_confirm:"):
+        # 既に DB 保存済み → 承認のみ（何もしない）
+        # Task already saved to DB; just acknowledge
+        await query.edit_message_text(
+            query.message.text + "\n\n✅ タスクとして追加しました。",
+            parse_mode="HTML",
+        )
+
+    elif data.startswith("task_ignore:"):
+        task_id = int(data.split(":", 1)[1])
+        db = context.bot_data.get("db")
+        if db:
+            try:
+                await db.delete_task(task_id)
+                await query.edit_message_text(
+                    query.message.text + "\n\n❌ 無視しました。",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await query.answer(f"エラー: {e}")
+
     else:
         logger.warning(f"未知のコールバックデータ: {data}")
 
@@ -842,6 +1060,25 @@ async def handle_text_message(
     修正済み返信案を再送する。
     """
     bot_data = context.bot_data
+
+    # タスク編集待ち状態の確認 / Check task edit mode
+    # awaiting_discord_reply・awaiting_revision より先にチェック
+    awaiting_task_edit = bot_data.get("awaiting_task_edit")
+    if awaiting_task_edit:
+        new_title = update.message.text.strip()
+        db = bot_data.get("db")
+        bot_data["awaiting_task_edit"] = None
+        if db and new_title:
+            try:
+                await db.update_task_title(awaiting_task_edit, new_title)
+                await update.message.reply_text(
+                    f"✅ タスクを更新しました：{html.escape(new_title)}", parse_mode="HTML"
+                )
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ 更新エラー：{e}")
+        else:
+            await update.message.reply_text("⚠️ タイトルが空のためキャンセルしました。")
+        return
 
     # Discord 返信待ち状態の確認（awaiting_revision より先にチェック）
     awaiting_discord = bot_data.get("awaiting_discord_reply")
@@ -1057,6 +1294,183 @@ async def handle_contacts_command(
         lines.append(f"   最終：{date_disp} / 頻度：{freq}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def handle_todo_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /todo <内容> [期限] でタスクを手動追加する。
+    Manually add a task: /todo <title> [due_date]
+
+    使用例 / Examples:
+      /todo 確定申告の書類準備 3/15
+      /todo デザイン案を送る 明日
+      /todo 請求書のテンプレート作成
+    """
+    args_text = " ".join(context.args) if context.args else ""
+    if not args_text:
+        await update.message.reply_text(
+            "使用方法 / Usage: /todo &lt;内容&gt; [期限]\n"
+            "例 / Example: /todo 確定申告の書類準備 3/15",
+            parse_mode="HTML",
+        )
+        return
+
+    db = context.bot_data.get("db")
+    task_manager = context.bot_data.get("task_manager")
+    chat_id = context.bot_data.get("chat_id", "")
+
+    if not db:
+        await update.message.reply_text("⚠️ DB が初期化されていません。")
+        return
+
+    # 末尾の日付表現を分離 / Split trailing date expression
+    title, date_token = _split_title_and_date(args_text)
+    due_date = _parse_due_date(date_token) if date_token else ""
+
+    # 優先度を自動判定 / Auto-determine priority from keywords
+    task_dict = {"title": title, "description": "", "due_date": due_date}
+    priority = task_manager.auto_prioritize(task_dict) if task_manager else "medium"
+
+    # DB に保存 / Save to DB
+    try:
+        task_id = await db.save_task(
+            title=title,
+            description="",
+            source="manual",
+            source_id="telegram",
+            priority=priority,
+            due_date=due_date,
+        )
+    except Exception as e:
+        logger.error(f"タスク保存エラー / Task save error: {e}")
+        await update.message.reply_text(f"⚠️ タスクの保存に失敗しました：{e}")
+        return
+
+    priority_icon = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(priority, "🟡")
+    priority_ja  = {"urgent": "緊急", "high": "高", "medium": "中", "low": "低"}.get(priority, "中")
+    due_part = f" / 期限：{due_date[:10]}" if due_date else ""
+
+    await update.message.reply_text(
+        f"✅ タスク追加：{html.escape(title)}\n"
+        f"（{priority_icon} 優先度：{priority_ja}{due_part}）",
+        parse_mode="HTML",
+    )
+    logger.info(f"タスク手動追加 / Manual task added: id={task_id} title={title!r}")
+
+
+async def handle_tasks_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /tasks [filter] で未完了タスク一覧を表示する。
+    Show active task list. Optional filters: urgent / today / overdue
+
+    表示例 / Display example:
+      📋 タスク一覧（5件）
+      🔴 1. 確定申告の書類準備（期限：3/15 残り21日）
+      🟠 2. 見積送付（期限：2/25 残り3日）
+    """
+    db = context.bot_data.get("db")
+    if not db:
+        await update.message.reply_text("⚠️ DB が初期化されていません。")
+        return
+
+    filter_arg = (context.args[0].lower() if context.args else "").strip()
+
+    try:
+        if filter_arg == "urgent":
+            tasks = await db.get_tasks(priority="urgent", limit=20)
+            tasks = [t for t in tasks if t.get("status") not in ("done", "cancelled")]
+        elif filter_arg == "today":
+            tasks = await db.get_today_tasks()
+        elif filter_arg == "overdue":
+            tasks = await db.get_overdue_tasks()
+        else:
+            raw = await db.get_tasks(limit=30)
+            tasks = [t for t in raw if t.get("status") not in ("done", "cancelled")]
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ タスク取得エラー：{e}")
+        return
+
+    if not tasks:
+        label = {"urgent": "緊急", "today": "今日", "overdue": "期限切れ"}.get(filter_arg, "未完了")
+        await update.message.reply_text(f"📋 {label}タスクはありません。")
+        return
+
+    # 最後に表示したリストを bot_data に保存（/done <番号> で参照）
+    # Save last displayed list to bot_data for /done <number> reference
+    context.bot_data["last_task_list"] = tasks
+
+    PRIORITY_ICON = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+    lines = [f"📋 <b>タスク一覧（{len(tasks)}件）</b>", "─────────────"]
+    for i, t in enumerate(tasks, 1):
+        icon = "🔵" if t.get("status") == "in_progress" else PRIORITY_ICON.get(t.get("priority", "medium"), "🟡")
+        due  = _format_due_display(t.get("due_date", ""))
+        lines.append(f"{icon} {i}. {html.escape(t['title'])}{due}")
+
+    # 最大 10 件分のインラインボタン（3 ボタン × 1 行/タスク）
+    # Inline buttons for up to 10 tasks (3 buttons × 1 row per task)
+    buttons = []
+    for i, t in enumerate(tasks[:10], 1):
+        tid = t["id"]
+        buttons.append([
+            InlineKeyboardButton(f"✅ {i}完了", callback_data=f"task_done:{tid}"),
+            InlineKeyboardButton(f"📝 {i}編集", callback_data=f"task_edit:{tid}"),
+            InlineKeyboardButton(f"🗑 {i}削除", callback_data=f"task_del:{tid}"),
+        ])
+
+    keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="HTML", reply_markup=keyboard
+    )
+
+
+async def handle_done_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /done <番号> で /tasks 一覧の番号に対応するタスクを完了にする。
+    Mark a task as done by its number from the last /tasks list.
+    """
+    db = context.bot_data.get("db")
+    if not db:
+        await update.message.reply_text("⚠️ DB が初期化されていません。")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "使用方法 / Usage: /done &lt;番号&gt;\n"
+            "まず /tasks でタスク一覧を表示してください。\n"
+            "Show /tasks list first, then use /done &lt;number&gt;.",
+            parse_mode="HTML",
+        )
+        return
+
+    idx = int(context.args[0]) - 1  # 1-indexed → 0-indexed
+    task_list: list = context.bot_data.get("last_task_list", [])
+
+    if not task_list:
+        await update.message.reply_text("先に /tasks でタスク一覧を表示してください。")
+        return
+    if idx < 0 or idx >= len(task_list):
+        await update.message.reply_text(f"⚠️ 番号 {idx + 1} は範囲外です（1〜{len(task_list)}）。")
+        return
+
+    task = task_list[idx]
+    try:
+        await db.update_task_status(task["id"], "done")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ 更新エラー：{e}")
+        return
+
+    await update.message.reply_text(
+        f"✅ 完了：{html.escape(task['title'])}", parse_mode="HTML"
+    )
+    # リストから除去して番号ズレを防ぐ / Remove from list to keep numbers consistent
+    context.bot_data["last_task_list"] = [t for t in task_list if t["id"] != task["id"]]
+    logger.info(f"タスク完了 / Task done: id={task['id']} title={task['title']!r}")
 
 
 def _log_classification_correction(email: dict, memory_path: str) -> None:

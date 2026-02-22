@@ -19,7 +19,10 @@ logs/
 MEMORY.md
 STATE.md
 contacts.md
-.claude/
+
+# Claude Code — settings.local.json (API keys) は除外、commands/ は追跡する
+.claude/*
+!.claude/commands/
 
 # SQLite DB
 data/*.db

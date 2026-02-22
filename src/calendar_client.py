@@ -162,6 +162,24 @@ class CalendarClient:
         logger.info(f"今日の予定 {len(events)} 件を取得")
         return events
 
+    def get_tomorrow_events(self) -> list[dict]:
+        """
+        明日の予定一覧を取得して返す。
+        戻り値は get_today_events() と同形式。
+        Fetch tomorrow's calendar events; same format as get_today_events().
+        """
+        # 明日の 00:00:00 JST から 23:59:59 JST までを対象とする
+        # Target range: tomorrow 00:00:00 JST to 23:59:59 JST
+        now_jst = datetime.now(JST)
+        tomorrow_start = (now_jst + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        tomorrow_end = tomorrow_start.replace(hour=23, minute=59, second=59)
+
+        events = self._list_events(tomorrow_start, tomorrow_end)
+        logger.info(f"明日の予定 {len(events)} 件を取得")
+        return events
+
     def get_upcoming_events(self, hours: int = 3) -> list[dict]:
         """
         現在時刻から指定した時間（hours）以内に開始または進行中の予定を返す。

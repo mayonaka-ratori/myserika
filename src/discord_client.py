@@ -27,7 +27,8 @@ class DiscordMonitor(discord.Client):
     - 監視チャンネル: バッファに蓄積して定期サマリー
     """
 
-    def __init__(self, config: dict, telegram_bot: Bot, chat_id: str, gemini_client):
+    def __init__(self, config: dict, telegram_bot: Bot, chat_id: str, gemini_client,
+                 task_manager=None):
         intents = discord.Intents.default()
         intents.message_content = True  # Developer Portal で Privileged Intent を有効化すること
         intents.messages = True
@@ -37,6 +38,7 @@ class DiscordMonitor(discord.Client):
         self.telegram_bot = telegram_bot
         self.chat_id = chat_id
         self.gemini_client = gemini_client
+        self.task_manager = task_manager
 
         # guild_id → set[channel_id]（空 set は全チャンネル監視）
         self._monitored_guilds: dict[int, set[int]] = {}
@@ -142,6 +144,35 @@ class DiscordMonitor(discord.Client):
         }
         self.unread_mention_count += 1
 
+        # タスク自動抽出 / Auto-extract tasks from mention
+        if self.task_manager is not None:
+            try:
+                extracted = await self.task_manager.extract_tasks_from_discord(
+                    sender=sender_name, content=content
+                )
+                for task in extracted:
+                    due_icon = f" / 期限推定: {task['due_date'][:10]}" if task.get('due_date') else ""
+                    source_label = f"（Discord メンション: {sender_name} より{due_icon}）"
+                    priority_icon = {
+                        "urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"
+                    }.get(task.get("priority", "medium"), "🟡")
+                    task_text = (
+                        f"📌 <b>新しいタスクを検出</b>\n"
+                        f"{priority_icon} {html.escape(task['title'])}\n"
+                        f"{html.escape(source_label)}"
+                    )
+                    from telegram import InlineKeyboardMarkup as TGKeyboard, InlineKeyboardButton as TGButton
+                    task_keyboard = TGKeyboard([[
+                        TGButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
+                        TGButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
+                    ]])
+                    await self.telegram_bot.send_message(
+                        chat_id=self.chat_id, text=task_text,
+                        parse_mode="HTML", reply_markup=task_keyboard
+                    )
+            except Exception as e:
+                logger.warning(f"Discord タスク抽出エラー（スキップ）/ Discord task extraction error: {e}")
+
         text = (
             f"🔔 <b>Discord でメンションされました</b>\n\n"
             f"サーバー: {html.escape(server_name)}\n"
@@ -184,6 +215,35 @@ class DiscordMonitor(discord.Client):
             "channel_name": None,
         }
         self.unread_dm_count += 1
+
+        # タスク自動抽出 / Auto-extract tasks from DM
+        if self.task_manager is not None:
+            try:
+                extracted = await self.task_manager.extract_tasks_from_discord(
+                    sender=sender_name, content=content
+                )
+                for task in extracted:
+                    due_icon = f" / 期限推定: {task['due_date'][:10]}" if task.get('due_date') else ""
+                    source_label = f"（Discord DM: {sender_name} より{due_icon}）"
+                    priority_icon = {
+                        "urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"
+                    }.get(task.get("priority", "medium"), "🟡")
+                    task_text = (
+                        f"📌 <b>新しいタスクを検出</b>\n"
+                        f"{priority_icon} {html.escape(task['title'])}\n"
+                        f"{html.escape(source_label)}"
+                    )
+                    from telegram import InlineKeyboardMarkup as TGKeyboard, InlineKeyboardButton as TGButton
+                    task_keyboard = TGKeyboard([[
+                        TGButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
+                        TGButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
+                    ]])
+                    await self.telegram_bot.send_message(
+                        chat_id=self.chat_id, text=task_text,
+                        parse_mode="HTML", reply_markup=task_keyboard
+                    )
+            except Exception as e:
+                logger.warning(f"Discord タスク抽出エラー（スキップ）/ Discord task extraction error: {e}")
 
         text = (
             f"💬 <b>Discord DM が届きました</b>\n\n"

@@ -507,3 +507,13 @@ class Database:
             "cancelled": counts.get("cancelled", 0),
             "overdue": overdue,
         }
+
+    async def update_task_title(self, task_id: int, title: str) -> None:
+        """タスクのタイトルを更新する。/ Update task title."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET title=?, updated_at=? WHERE id=?",
+                (title, now, task_id),
+            )
+            await db.commit()

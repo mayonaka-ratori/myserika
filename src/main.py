@@ -27,6 +27,7 @@ from telegram_bot import (
     build_application,
     send_notification,
     send_email_summary,
+    send_task_detection_notification,
 )
 from classifier import (
     load_contacts,
@@ -286,6 +287,19 @@ async def check_and_process_emails(
                                 f"タスク抽出完了 / Tasks extracted: "
                                 f"{len(extracted)}件 from {email.get('subject', '')!r}"
                             )
+                            # 抽出タスクごとに確認通知を送信 / Send confirmation for each task
+                            for task in extracted:
+                                source_label = (
+                                    f"（メール: {email.get('sender', '')} より"
+                                    + (f" / 期限推定: {task['due_date'][:10]}" if task.get('due_date') else "")
+                                    + "）"
+                                )
+                                try:
+                                    await send_task_detection_notification(
+                                        bot, chat_id, task, source_label=source_label
+                                    )
+                                except Exception as _e:
+                                    logger.warning(f"タスク通知エラー（スキップ）: {_e}")
                     except Exception as e:
                         logger.warning(
                             f"タスク抽出エラー（スキップ）/ Task extraction error (skip): {e}"
@@ -401,6 +415,19 @@ async def check_and_process_emails(
                             f"タスク抽出完了 / Tasks extracted: "
                             f"{len(extracted)}件 from {email.get('subject', '')!r}"
                         )
+                        # 抽出タスクごとに確認通知を送信 / Send confirmation for each task
+                        for task in extracted:
+                            source_label = (
+                                f"（メール: {email.get('sender', '')} より"
+                                + (f" / 期限推定: {task['due_date'][:10]}" if task.get('due_date') else "")
+                                + "）"
+                            )
+                            try:
+                                await send_task_detection_notification(
+                                    bot, chat_id, task, source_label=source_label
+                                )
+                            except Exception as _e:
+                                logger.warning(f"タスク通知エラー（スキップ）: {_e}")
                 except Exception as e:
                     logger.warning(
                         f"タスク抽出エラー（スキップ）/ Task extraction error (skip): {e}"
@@ -633,6 +660,8 @@ async def main_loop(config: dict) -> None:
         "notified_email_ids": set(),      # set[str]: 通知済み email_id
         "notified_email_ids_date": None,  # date | None: セット最終リセット日
         "task_manager": None,             # main_loop で上書き / overwritten in main_loop
+        "last_task_list": [],             # /tasks の最終表示リスト / last /tasks display
+        "awaiting_task_edit": None,       # 編集中タスクID / task id being edited
     })
     telegram_app.bot_data["calendar_service"] = calendar_service
     telegram_app.bot_data["calendar_client"] = calendar_client
@@ -662,6 +691,7 @@ async def main_loop(config: dict) -> None:
                 telegram_bot=telegram_app.bot,
                 chat_id=chat_id,
                 gemini_client=gemini_client,
+                task_manager=task_manager,
             )
             asyncio.create_task(discord_monitor.start(discord_cfg["bot_token"]))
             asyncio.create_task(discord_monitor.run_summary_scheduler())
