@@ -364,22 +364,36 @@ async def check_and_process_emails(
                     language=lang,
                 )
 
+        # quiet モードチェック / check if manual quiet mode is active
+        quiet_until = telegram_app.bot_data.get("quiet_until")
+        is_quiet = bool(quiet_until and datetime.now() < quiet_until)
+        if is_quiet and classified:
+            telegram_app.bot_data["quiet_email_count"] = (
+                telegram_app.bot_data.get("quiet_email_count", 0) + len(classified)
+            )
+            logger.info(
+                f"quiet モード中: Telegram 通知をスキップ（{len(classified)}件、"
+                f"解除: {quiet_until.strftime('%H:%M')}）"
+            )
+
         # retry_queue に追加して Telegram 通知
         if new_retry_emails:
             existing_retry = telegram_app.bot_data.setdefault("retry_queue", [])
             existing_retry.extend(new_retry_emails)
             logger.warning(f"{len(new_retry_emails)} 件を retry_queue に追加（API レート制限）")
             try:
-                await send_notification(
-                    bot,
-                    chat_id,
-                    f"⚠️ Gemini API が一時的に制限中です。後で {len(new_retry_emails)} 件を再試行します。",
-                )
+                if not is_quiet:
+                    await send_notification(
+                        bot,
+                        chat_id,
+                        f"⚠️ Gemini API が一時的に制限中です。後で {len(new_retry_emails)} 件を再試行します。",
+                    )
             except Exception:
                 pass
 
         # ステップ4: Telegram にサマリーを送信
-        await send_email_summary(bot, chat_id, classified)
+        if not is_quiet:
+            await send_email_summary(bot, chat_id, classified)
 
         logger.info(
             f"処理完了: {len(classified)} 件分類, 返信案 {new_drafts} 件生成, "
@@ -523,6 +537,10 @@ async def main_loop(config: dict) -> None:
         "memory_path": str(MEMORY_PATH),
         # /status コマンド用: 起動時刻を記録 / for /status command: record start time
         "start_time": datetime.now(),
+        "contacts_path": str(CONTACTS_PATH),
+        "quiet_until":   None,   # datetime | None: quiet モード解除時刻
+        "quiet_since":   None,   # datetime | None: quiet 開始時刻
+        "quiet_email_count": 0,  # quiet 中に届いたメール件数カウンタ
     })
     telegram_app.bot_data["calendar_service"] = calendar_service
     telegram_app.bot_data["calendar_client"] = calendar_client

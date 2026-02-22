@@ -8,7 +8,9 @@ python-telegram-bot v20+ の非同期 API を使用する。
 import html
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot
 from telegram.ext import (
     Application,
@@ -40,10 +42,16 @@ def build_application(bot_token: str) -> Application:
     app = Application.builder().token(bot_token).build()
 
     # コマンドハンドラー / command handlers
-    app.add_handler(CommandHandler("status",  handle_status_command))
-    app.add_handler(CommandHandler("help",    handle_help_command))
-    app.add_handler(CommandHandler("pending", handle_pending_command))
-    app.add_handler(CommandHandler("check",   handle_check_command))
+    app.add_handler(CommandHandler("status",   handle_status_command))
+    app.add_handler(CommandHandler("help",     handle_help_command))
+    app.add_handler(CommandHandler("pending",  handle_pending_command))
+    app.add_handler(CommandHandler("check",    handle_check_command))
+    app.add_handler(CommandHandler("search",   handle_search_command))
+    app.add_handler(CommandHandler("schedule", handle_schedule_command))
+    app.add_handler(CommandHandler("stats",    handle_stats_command))
+    app.add_handler(CommandHandler("quiet",    handle_quiet_command))
+    app.add_handler(CommandHandler("resume",   handle_resume_command))
+    app.add_handler(CommandHandler("contacts", handle_contacts_command))
 
     # インラインキーボードのコールバックハンドラー
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -85,16 +93,233 @@ async def handle_help_command(
         "/status — システム状態・稼働時間・統計\n"
         "/pending — 承認待ちメール一覧\n"
         "/check — メールを今すぐチェック\n"
-        "/help — このヘルプを表示\n\n"
-        "<i>未実装（予定）:</i>\n"
-        "/search — メール検索\n"
-        "/schedule — 今日の予定\n"
-        "/stats — 統計レポート\n"
-        "/contacts — 重要連絡先\n"
-        "/quiet — 通知一時停止\n"
-        "/resume — 通知再開"
+        "/search — メール検索（例: /search 田中）\n"
+        "/schedule — 今日の予定（/schedule tomorrow で明日）\n"
+        "/stats — 統計レポート（/stats weekly で週間）\n"
+        "/contacts — 重要連絡先一覧\n"
+        "/quiet — 通知一時停止（例: /quiet 2 で2時間）\n"
+        "/resume — 通知再開\n"
+        "/help — このヘルプを表示"
     )
     await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def handle_search_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /search <keyword> コマンドで DB 内のメールをキーワード検索して結果を表示する。
+    /search command: search emails in DB by keyword and show results
+    """
+    bot_data = context.bot_data
+    db = bot_data.get("db")
+
+    if db is None:
+        await update.message.reply_text("⚠️ データベースが利用できません")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "使い方：<code>/search キーワード</code>", parse_mode="HTML"
+        )
+        return
+
+    keyword = " ".join(args)
+
+    try:
+        results = await db.search_emails(keyword)
+    except Exception as e:
+        logger.error(f"/search エラー: {e}")
+        await update.message.reply_text("⚠️ 検索中にエラーが発生しました。")
+        return
+
+    if not results:
+        await update.message.reply_text(
+            f"🔍 「{html.escape(keyword)}」に一致するメールが見つかりませんでした"
+        )
+        return
+
+    # ステータス表示ラベル / status display labels
+    status_labels = {
+        "pending":   "承認待ち",
+        "approved":  "返信済み",
+        "rejected":  "却下",
+        "read_only": "閲覧のみ",
+    }
+
+    lines = [
+        f"🔍 「{html.escape(keyword)}」の検索結果（{len(results)}件）",
+        "─────────────",
+    ]
+    for i, row in enumerate(results, 1):
+        try:
+            dt = datetime.fromisoformat(row["created_at"])
+            date_str = dt.strftime("%m/%d")
+        except Exception:
+            date_str = "??"
+        sender = html.escape(row.get("sender", "（不明）"))
+        subject = html.escape(row.get("subject", "（件名なし）"))
+        status_label = status_labels.get(row.get("status", ""), row.get("status", ""))
+        lines.append(f"{i}. {date_str} {sender} - {subject} [{status_label}]")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def handle_schedule_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /schedule [tomorrow] コマンドで今日または明日の予定と空き時間を表示する。
+    /schedule command: show today's (or tomorrow's) events and free time slots
+    """
+    bot_data = context.bot_data
+    calendar_client = bot_data.get("calendar_client")
+
+    if calendar_client is None:
+        await update.message.reply_text("📅 カレンダーが設定されていません")
+        return
+
+    # 引数判定 / determine target day from arguments
+    args = context.args or []
+    show_tomorrow = bool(args) and args[0].lower() == "tomorrow"
+
+    # 曜日名 / weekday names in Japanese
+    weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+    JST = ZoneInfo("Asia/Tokyo")
+    now_jst = datetime.now(JST)
+
+    try:
+        if show_tomorrow:
+            target_date = (now_jst + timedelta(days=1)).date()
+            events = calendar_client.get_tomorrow_events()
+        else:
+            target_date = now_jst.date()
+            events = calendar_client.get_today_events()
+
+        slots = calendar_client.get_free_slots(target_date)
+
+        # ヘッダー / header
+        date_display = target_date.strftime("%Y/%m/%d")
+        weekday = weekday_names[target_date.weekday()]
+        lines = [f"📅 {date_display}（{weekday}）の予定", "─────────────"]
+
+        if not events:
+            lines.append("予定はありません")
+        else:
+            for event in events:
+                if event["is_all_day"]:
+                    time_str = "終日"
+                elif event["start"] and event["end"]:
+                    time_str = (
+                        f"{event['start'].strftime('%H:%M')}-"
+                        f"{event['end'].strftime('%H:%M')}"
+                    )
+                else:
+                    time_str = "時刻不明"
+                title = html.escape(event["title"])
+                attendees_count = len(event["attendees"])
+                attendee_str = f"（{attendees_count}名）" if attendees_count > 1 else ""
+                lines.append(f"{time_str} {title}{attendee_str}")
+
+        lines.append("─────────────")
+
+        # 空き時間（0件の場合は行ごと省略）/ free slots (omit if empty)
+        if slots:
+            slot_strs = ", ".join(
+                f"{s['start'].strftime('%H:%M')}-{s['end'].strftime('%H:%M')}"
+                for s in slots
+            )
+            lines.append(f"空き時間：{slot_strs}")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"/schedule エラー: {e}")
+        await update.message.reply_text("⚠️ カレンダーの取得に失敗しました")
+
+
+async def handle_stats_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /stats [weekly] コマンドで本日または週間の統計を表示する。
+    /stats command: show today's statistics or a 7-day weekly summary
+    """
+    bot_data = context.bot_data
+    db = bot_data.get("db")
+
+    if db is None:
+        await update.message.reply_text("⚠️ データベースが利用できません")
+        return
+
+    args = context.args or []
+    show_weekly = bool(args) and args[0].lower() == "weekly"
+
+    try:
+        if show_weekly:
+            # 週間統計 / weekly statistics
+            week = await db.get_weekly_stats()
+
+            start_date = week[0]["date"]
+            end_date = week[-1]["date"]
+            start_disp = datetime.strptime(start_date, "%Y-%m-%d").strftime("%m/%d")
+            end_disp = datetime.strptime(end_date, "%Y-%m-%d").strftime("%m/%d")
+            weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+
+            lines = [f"📊 週間統計（{start_disp}〜{end_disp}）", "─────────────"]
+            total_received_sum = 0
+            total_approved_sum = 0
+
+            for entry in week:
+                d = datetime.strptime(entry["date"], "%Y-%m-%d")
+                day_disp = d.strftime("%m/%d")
+                weekday = weekday_names[d.weekday()]
+                received = entry.get("total_received", 0)
+                approved = entry.get("approved", 0)
+                total_received_sum += received
+                total_approved_sum += approved
+                lines.append(f"{day_disp}（{weekday}）：{received}件受信 / 返信{approved}件")
+
+            lines.extend([
+                "─────────────",
+                f"週合計：{total_received_sum}件受信 / 返信{total_approved_sum}件",
+            ])
+
+        else:
+            # 本日統計 / today's statistics
+            stats = await db.get_daily_stats()
+            today = datetime.now().strftime("%Y/%m/%d")
+
+            urgent               = stats.get("urgent", 0)
+            normal               = stats.get("normal", 0)
+            read_only            = stats.get("read_only", 0)
+            ignored              = stats.get("ignored", 0)
+            total_received       = stats.get("total_received", 0)
+            approved             = stats.get("approved", 0)
+            pending              = stats.get("pending", 0)
+            gemini_calls         = stats.get("gemini_calls", 0)
+            discord_notifications = stats.get("discord_notifications", 0)
+
+            lines = [
+                f"📊 本日の統計（{today}）",
+                "─────────────",
+                f"📧 受信メール：{total_received}件",
+                f"  ├ 要返信（重要）：{urgent}件",
+                f"  ├ 要返信（通常）：{normal}件",
+                f"  ├ 閲覧のみ：{read_only}件",
+                f"  └ 無視：{ignored}件",
+                f"✅ 返信済み：{approved}件",
+                f"⏳ 承認待ち：{pending}件",
+                f"🧠 Gemini API：{gemini_calls}回使用",
+                f"💬 Discord通知：{discord_notifications}件",
+            ]
+
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"/stats エラー: {e}")
+        await update.message.reply_text("⚠️ 統計の取得中にエラーが発生しました。")
 
 
 async def handle_status_command(
@@ -690,6 +915,148 @@ async def handle_text_message(
             f"⚠️ 修正中にエラーが発生しました：{html.escape(str(e))}",
             parse_mode="HTML",
         )
+
+
+def _parse_important_contacts(content: str) -> list[dict]:
+    """
+    contacts.md から優先度「高」またはタグ「重要」の連絡先を抽出する。
+    Parse contacts with priority '高' or tag '重要' from contacts.md.
+    """
+    contacts = []
+    sections = re.split(r'\n### ', '\n' + content)
+    for section in sections[1:]:
+        lines = section.strip().split('\n')
+        if not lines:
+            continue
+        name = lines[0].strip()
+        data: dict[str, str] = {}
+        tags: list[str] = []
+        for line in lines[1:]:
+            if line.startswith('- メールアドレス：'):
+                data['email'] = line[len('- メールアドレス：'):].strip()
+            elif line.startswith('- やり取り頻度：'):
+                data['frequency'] = line[len('- やり取り頻度：'):].strip()
+            elif line.startswith('- 最終連絡日：'):
+                data['last_contact'] = line[len('- 最終連絡日：'):].strip()
+            elif line.startswith('- 優先度：'):
+                data['priority'] = line[len('- 優先度：'):].strip()
+            elif line.startswith('- タグ：'):
+                tags = [t.strip() for t in line[len('- タグ：'):].split(',')]
+        # 優先度「高」またはタグ「重要」でフィルタ / filter by priority or tag
+        if data.get('priority') == '高' or '重要' in tags:
+            contacts.append({
+                'name': name,
+                'email': data.get('email', ''),
+                'frequency': data.get('frequency', ''),
+                'last_contact': data.get('last_contact', ''),
+            })
+    return contacts
+
+
+async def handle_quiet_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /quiet [N] コマンドで Telegram 通知を N 時間（デフォルト1時間）停止する。
+    /quiet command: pause Telegram notifications for N hours (default 1)
+    """
+    bot_data = context.bot_data
+    quiet_until = bot_data.get("quiet_until")
+
+    if quiet_until and datetime.now() < quiet_until:
+        resume_str = quiet_until.strftime("%H:%M")
+        await update.message.reply_text(
+            f"🔇 既に停止中です（{resume_str} に再開）"
+        )
+        return
+
+    args = context.args or []
+    try:
+        hours = int(args[0]) if args else 1
+        if hours <= 0:
+            hours = 1
+    except (ValueError, IndexError):
+        hours = 1
+
+    now = datetime.now()
+    until = now + timedelta(hours=hours)
+    bot_data["quiet_until"] = until
+    bot_data["quiet_since"] = now
+    bot_data["quiet_email_count"] = 0
+
+    resume_str = until.strftime("%H:%M")
+    await update.message.reply_text(
+        f"🔇 通知を{hours}時間停止しました（{resume_str} に再開）"
+    )
+
+
+async def handle_resume_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /resume コマンドで停止中の Telegram 通知を再開する。
+    /resume command: resume Telegram notifications
+    """
+    bot_data = context.bot_data
+    quiet_until = bot_data.get("quiet_until")
+
+    if not quiet_until or datetime.now() >= quiet_until:
+        await update.message.reply_text("🔔 通知は停止中ではありません")
+        return
+
+    email_count = bot_data.get("quiet_email_count", 0)
+    bot_data["quiet_until"] = None
+    bot_data["quiet_since"] = None
+    bot_data["quiet_email_count"] = 0
+
+    msg = "🔔 通知を再開しました"
+    if email_count > 0:
+        msg += f"\n📬 停止中に届いたメール：{email_count}件"
+    await update.message.reply_text(msg)
+
+
+async def handle_contacts_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /contacts コマンドで重要連絡先（優先度「高」またはタグ「重要」）一覧を表示する。
+    /contacts command: show important contacts list
+    """
+    bot_data = context.bot_data
+    contacts_path = bot_data.get("contacts_path")
+
+    if not contacts_path or not os.path.exists(contacts_path):
+        await update.message.reply_text("👥 重要連絡先はまだ登録されていません")
+        return
+
+    try:
+        with open(contacts_path, encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        logger.error(f"/contacts 読み込みエラー: {e}")
+        await update.message.reply_text("⚠️ 連絡先ファイルの読み込みに失敗しました")
+        return
+
+    contacts = _parse_important_contacts(content)
+
+    if not contacts:
+        await update.message.reply_text("👥 重要連絡先はまだ登録されていません")
+        return
+
+    lines = [f"👥 重要連絡先（{len(contacts)}名）", "─────────────"]
+    for c in contacts:
+        name = html.escape(c['name'])
+        email = html.escape(c['email'])
+        last = c.get('last_contact', '')
+        freq = c.get('frequency', '')
+        try:
+            date_disp = datetime.strptime(last, "%Y-%m-%d").strftime("%m/%d")
+        except Exception:
+            date_disp = last
+        lines.append(f"⭐ {name} - {email}")
+        lines.append(f"   最終：{date_disp} / 頻度：{freq}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 def _log_classification_correction(email: dict, memory_path: str) -> None:
