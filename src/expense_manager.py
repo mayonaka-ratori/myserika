@@ -5,23 +5,42 @@ ExpenseManager クラスで CSV の取り込みと expenses テーブルとの�
 """
 
 import csv
+import io
+import json
 import logging
+import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# MF CSV のカラム名マッピング（日本語ヘッダー → 内部キー）
+# MF CSV column name mapping (Japanese header → internal key)
 _MF_COLUMN_MAP = {
-    "計算対象":     "is_calculated",
+    "計算対象":     "is_calculation_target",
     "日付":         "date",
     "内容":         "content",
     "金額（円）":   "amount",
-    "保有金融機関": "institution",
-    "大項目":       "category_large",
-    "中項目":       "category_medium",
+    "保有金融機関": "source_account",
+    "大項目":       "large_category",
+    "中項目":       "medium_category",
     "メモ":         "memo",
     "振替":         "is_transfer",
     "ID":           "mf_id",
+}
+
+# Keyword → tax category mapping for Japanese freelancer accounts
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "通信費":     ["携帯", "Wi-Fi", "プロバイダ", "サーバー", "ドメイン", "SIM"],
+    "旅費交通費": ["電車", "バス", "タクシー", "新幹線", "飛行機", "ETC", "Suica", "PASMO"],
+    "消耗品費":   ["文房具", "インク", "USB", "ケーブル", "マウス", "キーボード"],
+    "接待交際費": ["会食", "お中元", "お歳暮", "慶弔", "贈答"],
+    "会議費":     ["カフェ", "スタバ", "ドトール", "打ち合わせ"],
+    "地代家賃":   ["事務所", "コワーキング", "レンタルオフィス"],
+    "水道光熱費": ["電気", "ガス", "水道", "東京電力", "東京ガス"],
+    "広告宣伝費": ["Google広告", "SNS広告", "名刺", "チラシ"],
+    "外注費":     ["デザイン依頼", "開発依頼", "翻訳", "Fiverr", "Lancers"],
+    "新聞図書費": ["書籍", "Kindle", "技術書", "サブスク"],
+    "研修費":     ["セミナー", "勉強会", "Udemy", "オンライン講座"],
+    "雑費":       [],
 }
 
 # CSV エンコード候補（BOM 付き UTF-8 を最初に試す）
@@ -104,13 +123,13 @@ class ExpenseManager:
 
             # カラムマッピング
             mf_id = raw_id
-            is_calculated = _parse_flag(row.get("計算対象", "1"))
+            is_calculation_target = _parse_flag(row.get("計算対象", "1"))
             date_str = row.get("日付", "").strip()
             content_str = row.get("内容", "").strip()
             amount_str = row.get("金額（円）", "0").strip()
-            institution = row.get("保有金融機関", "").strip()
-            category_large = row.get("大項目", "").strip()
-            category_medium = row.get("中項目", "").strip()
+            source_account = row.get("保有金融機関", "").strip()
+            large_category = row.get("大項目", "").strip()
+            medium_category = row.get("中項目", "").strip()
             memo = row.get("メモ", "").strip()
             is_transfer = _parse_flag(row.get("振替", "0"))
 
@@ -130,13 +149,13 @@ class ExpenseManager:
 
             inserted = await self._db.save_mf_transaction(
                 mf_id=mf_id,
-                is_calculated=is_calculated,
+                is_calculation_target=is_calculation_target,
                 date=date_normalized,
                 content=content_str,
                 amount=amount,
-                institution=institution,
-                category_large=category_large,
-                category_medium=category_medium,
+                source_account=source_account,
+                large_category=large_category,
+                medium_category=medium_category,
                 memo=memo,
                 is_transfer=is_transfer,
             )
@@ -165,18 +184,11 @@ class ExpenseManager:
                 ...
             ]
         """
-        # 未照合経費を取得（matched_mf_id IS NULL）
+        # Fetch unmatched expenses
         try:
-            import aiosqlite
-            async with aiosqlite.connect(self._db._db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM expenses WHERE matched_mf_id IS NULL ORDER BY date DESC LIMIT 50"
-                )
-                rows = await cursor.fetchall()
-                unmatched_expenses = [dict(row) for row in rows]
+            unmatched_expenses = await self._db.get_unmatched_expenses()
         except Exception as e:
-            logger.error(f"未照合経費取得エラー / Error fetching unmatched expenses: {e}")
+            logger.error(f"Error fetching unmatched expenses: {e}")
             return []
 
         results = []
@@ -184,7 +196,7 @@ class ExpenseManager:
         for expense in unmatched_expenses:
             expense_date = expense.get("date", "")
             expense_amount = expense.get("amount", 0)
-            expense_desc = expense.get("description", "")
+            expense_desc = expense.get("store_name", "")
 
             # ±2日の日付範囲で候補を絞り込む
             candidates_raw = await self._get_mf_candidates_in_range(
@@ -200,12 +212,9 @@ class ExpenseManager:
                 # 部分一致チェック
                 if _partial_match_score(expense_desc, mf_content):
                     confidence = "確実"
-                    # 確実な照合は自動的に matched に更新
+                    # Auto-match on high-confidence partial string match
                     if not auto_matched:
-                        await self._db.update_mf_match_status(
-                            mf["mf_id"], "matched", expense["id"]
-                        )
-                        await self._update_expense_matched_mf(expense["id"], mf["mf_id"])
+                        await self._db.match_expense_to_mf(expense["id"], mf["mf_id"])
                         auto_matched = True
                 else:
                     # Gemini で類似判定
@@ -248,7 +257,9 @@ class ExpenseManager:
                     SELECT * FROM moneyforward_transactions
                     WHERE date BETWEEN ? AND ?
                       AND ABS(amount) = ?
-                      AND match_status = 'pending'
+                      AND matched_expense_id IS NULL
+                      AND is_transfer = 0
+                      AND is_calculation_target = 1
                     ORDER BY date DESC
                     """,
                     (date_from, date_to, abs_amount),
@@ -256,23 +267,207 @@ class ExpenseManager:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
         except Exception as e:
-            logger.error(f"MF 候補取得エラー: {e}")
+            logger.error(f"MF candidate fetch error: {e}")
             return []
 
-    async def _update_expense_matched_mf(self, expense_id: int, mf_id: str) -> None:
-        """expenses テーブルの matched_mf_id を更新する。
-        / Update matched_mf_id in expenses table."""
+    def rule_based_categorize(
+        self, store_name: str, items_text: str = ""
+    ) -> tuple[str, None] | None:
+        """Match store name and items text against CATEGORY_KEYWORDS dictionary.
+        Returns (category, None) on first keyword match, or None if no match found.
+        subcategory is always None for rule-based matching."""
+        haystack = f"{store_name} {items_text}".lower()
+        for category, keywords in CATEGORY_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword.lower() in haystack:
+                    return (category, None)
+        return None
+
+    async def analyze_receipt_image(self, image_path: str) -> dict:
+        """OCR a receipt image using Gemini vision and return structured data.
+
+        Resizes images to max 1024px on the longest side before sending to Gemini
+        to reduce token usage. Never raises — returns a partial/empty dict on failure.
+
+        Returns:
+            {
+                "date": str | None,      # YYYY-MM-DD
+                "store_name": str,       # fallback "不明"
+                "items": list[dict],     # [{"name": str, "price": int, "quantity": int}]
+                "subtotal": int | None,
+                "tax": int | None,
+                "total": int,            # fallback 0
+                "payment_method": str,   # "cash" / "credit_card" / "electronic"
+            }
+        """
+        _FALLBACK: dict = {
+            "date": None,
+            "store_name": "不明",
+            "items": [],
+            "subtotal": None,
+            "tax": None,
+            "total": 0,
+            "payment_method": "cash",
+        }
+
         try:
-            import aiosqlite
-            now = datetime.now().isoformat()
-            async with aiosqlite.connect(self._db._db_path) as db:
-                await db.execute(
-                    "UPDATE expenses SET matched_mf_id=?, updated_at=? WHERE id=?",
-                    (mf_id, now, expense_id),
-                )
-                await db.commit()
+            from PIL import Image  # deferred — bot still starts if Pillow missing
+        except ImportError:
+            logger.error("Pillow is not installed; cannot OCR receipt images")
+            return _FALLBACK
+
+        client = self._gemini.get("client")
+        model = self._gemini.get("model", "gemini-2.5-flash")
+        if client is None:
+            logger.error("Gemini client not initialized; cannot OCR receipt image")
+            return _FALLBACK
+
+        try:
+            img = Image.open(image_path)
+            # Resize so the longest side is at most 1024 px
+            if max(img.width, img.height) > 1024:
+                img.thumbnail((1024, 1024), Image.LANCZOS)
+            # Convert to RGB (handles RGBA PNGs, palette images, etc.)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
         except Exception as e:
-            logger.error(f"expense 照合更新エラー: {e}")
+            logger.error(f"Failed to open/resize receipt image {image_path}: {e}")
+            return _FALLBACK
+
+        ocr_prompt = (
+            "このレシート画像から以下の情報をJSON形式で抽出してください：\n"
+            "{\n"
+            '  "date": "YYYY-MM-DD（購入日）",\n'
+            '  "store_name": "店名",\n'
+            '  "items": [{"name": "品名", "price": 単価, "quantity": 数量}],\n'
+            '  "subtotal": 小計,\n'
+            '  "tax": 消費税額,\n'
+            '  "total": 合計金額,\n'
+            '  "payment_method": "支払方法（記載があれば cash/credit_card/electronic、なければnull）"\n'
+            "}\n"
+            "読み取れない項目はnullにしてください。"
+        )
+
+        try:
+            response = client.models.generate_content(
+                model=model, contents=[img, ocr_prompt]
+            )
+            raw_text = response.text or ""
+        except Exception as e:
+            logger.error(f"Gemini vision API error for {image_path}: {e}")
+            return _FALLBACK
+
+        # Parse JSON — strip markdown fences then regex-extract the object
+        try:
+            cleaned = re.sub(r"```(?:json)?\s*", "", raw_text).strip().rstrip("`").strip()
+            m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if not m:
+                raise ValueError("No JSON object found in Gemini response")
+            parsed = json.loads(m.group())
+        except Exception as e:
+            logger.warning(f"Receipt OCR JSON parse failed ({e}); returning partial data")
+            parsed = {}
+
+        # Normalize and coerce each field
+        valid_payment = {"cash", "credit_card", "electronic"}
+        pm_raw = parsed.get("payment_method") or "cash"
+        payment_method = pm_raw if pm_raw in valid_payment else "cash"
+
+        items_raw = parsed.get("items")
+        items: list[dict] = []
+        if isinstance(items_raw, list):
+            for it in items_raw:
+                if isinstance(it, dict):
+                    items.append({
+                        "name":     str(it.get("name") or ""),
+                        "price":    int(it["price"]) if it.get("price") is not None else 0,
+                        "quantity": int(it["quantity"]) if it.get("quantity") is not None else 1,
+                    })
+
+        def _to_int_or_none(v: object) -> int | None:
+            try:
+                return int(v) if v is not None else None
+            except (ValueError, TypeError):
+                return None
+
+        return {
+            "date":           parsed.get("date") or None,
+            "store_name":     str(parsed.get("store_name") or "不明"),
+            "items":          items,
+            "subtotal":       _to_int_or_none(parsed.get("subtotal")),
+            "tax":            _to_int_or_none(parsed.get("tax")),
+            "total":          int(parsed.get("total") or 0),
+            "payment_method": payment_method,
+        }
+
+    async def auto_categorize(
+        self, store_name: str, items: list[dict]
+    ) -> tuple[str, str | None]:
+        """Determine the tax category for an expense using a three-stage pipeline:
+        1. Rule-based keyword match (instant, no API call)
+        2. DB history: reuse category if same store_name was seen before
+        3. Gemini LLM fallback (Japanese prompt for accuracy)
+        Returns (category, subcategory) — always succeeds, falls back to ("雑費", None).
+        """
+        items_text = " ".join(item.get("name", "") for item in items if item.get("name"))
+
+        # Stage 1: rule-based keyword match
+        rule_result = self.rule_based_categorize(store_name, items_text)
+        if rule_result is not None:
+            return rule_result
+
+        # Stage 2: DB history — same store_name used before
+        try:
+            past = await self._db.get_expenses(limit=200)
+            store_norm = store_name.strip().lower()
+            for exp in past:
+                if exp.get("store_name", "").strip().lower() == store_norm:
+                    cat = exp.get("category") or ""
+                    if cat:
+                        sub = exp.get("subcategory") or None
+                        logger.debug(
+                            f"auto_categorize: DB history match for '{store_name}' → {cat}"
+                        )
+                        return (cat, sub)
+        except Exception as e:
+            logger.warning(f"auto_categorize: DB history lookup failed: {e}")
+
+        # Stage 3: Gemini fallback
+        client = self._gemini.get("client")
+        model = self._gemini.get("model", "gemini-2.5-flash")
+        if client is None:
+            return ("雑費", None)
+
+        category_list = "、".join(CATEGORY_KEYWORDS.keys())
+        items_summary = items_text[:200] if items_text else "（品目不明）"
+        prompt = (
+            f"フリーランスの青色申告において、"
+            f"店名「{store_name}」での購入品「{items_summary}」は"
+            f"どの勘定科目に分類すべきですか？\n"
+            f"選択肢: {category_list}\n"
+            f'JSON形式のみで回答してください: {{"category": "...", "subcategory": "...またはnull"}}'
+        )
+
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            raw = response.text or ""
+            cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+            m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if not m:
+                raise ValueError("No JSON in Gemini categorize response")
+            parsed = json.loads(m.group())
+            cat = str(parsed.get("category") or "").strip()
+            sub_raw = parsed.get("subcategory")
+            sub = str(sub_raw).strip() if sub_raw and str(sub_raw).lower() != "null" else None
+            if cat in CATEGORY_KEYWORDS:
+                logger.debug(
+                    f"auto_categorize: Gemini result for '{store_name}' → {cat}"
+                )
+                return (cat, sub)
+        except Exception as e:
+            logger.warning(f"auto_categorize: Gemini fallback failed: {e}")
+
+        return ("雑費", None)
 
     async def _gemini_similarity_check(self, content_a: str, content_b: str) -> bool:
         """Gemini で2つの店名・内容が同一取引か判定する。

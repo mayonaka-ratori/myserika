@@ -68,34 +68,37 @@ class Database:
                 );
 
                 CREATE TABLE IF NOT EXISTS moneyforward_transactions (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mf_id           TEXT UNIQUE NOT NULL,
-                    is_calculated   INTEGER DEFAULT 1,
-                    date            TEXT NOT NULL,
-                    content         TEXT,
-                    amount          INTEGER NOT NULL,
-                    institution     TEXT,
-                    category_large  TEXT,
-                    category_medium TEXT,
-                    memo            TEXT,
-                    is_transfer     INTEGER DEFAULT 0,
-                    match_status    TEXT DEFAULT 'pending',
-                    matched_expense_id INTEGER,
-                    created_at      TEXT NOT NULL
+                    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mf_id                 TEXT UNIQUE NOT NULL,
+                    is_calculation_target INTEGER DEFAULT 1,
+                    date                  TEXT NOT NULL,
+                    content               TEXT,
+                    amount                INTEGER NOT NULL,
+                    source_account        TEXT,
+                    large_category        TEXT,
+                    medium_category       TEXT,
+                    memo                  TEXT,
+                    is_transfer           INTEGER DEFAULT 0,
+                    matched_expense_id    INTEGER,
+                    imported_at           TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS expenses (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date                TEXT NOT NULL,
-                    description         TEXT NOT NULL,
-                    amount              INTEGER NOT NULL,
-                    category            TEXT,
-                    receipt_image_path  TEXT,
-                    matched_mf_id       TEXT,
-                    match_confidence    TEXT,
-                    source              TEXT DEFAULT 'manual',
-                    created_at          TEXT NOT NULL,
-                    updated_at          TEXT NOT NULL
+                    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date                 TEXT NOT NULL,
+                    store_name           TEXT NOT NULL,
+                    amount               INTEGER NOT NULL,
+                    tax_amount           INTEGER,
+                    category             TEXT,
+                    subcategory          TEXT,
+                    payment_method       TEXT DEFAULT 'cash',
+                    receipt_image_path   TEXT,
+                    moneyforward_matched INTEGER DEFAULT 0,
+                    moneyforward_id      TEXT,
+                    note                 TEXT,
+                    source               TEXT DEFAULT 'manual',
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS discord_messages (
@@ -126,6 +129,81 @@ class Database:
                 await db.commit()
             except Exception:
                 pass  # カラムが既に存在する場合はスキップ / Skip if column already exists
+
+            # Migrate expenses table: old schema used 'description'; new schema uses 'store_name'
+            try:
+                await db.execute("SELECT store_name FROM expenses LIMIT 0")
+            except Exception:
+                await db.executescript("""
+                    ALTER TABLE expenses RENAME TO expenses_old;
+                    CREATE TABLE expenses (
+                        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date                 TEXT NOT NULL,
+                        store_name           TEXT NOT NULL,
+                        amount               INTEGER NOT NULL,
+                        tax_amount           INTEGER,
+                        category             TEXT,
+                        subcategory          TEXT,
+                        payment_method       TEXT DEFAULT 'cash',
+                        receipt_image_path   TEXT,
+                        moneyforward_matched INTEGER DEFAULT 0,
+                        moneyforward_id      TEXT,
+                        note                 TEXT,
+                        source               TEXT DEFAULT 'manual',
+                        created_at           TEXT NOT NULL,
+                        updated_at           TEXT NOT NULL
+                    );
+                    INSERT INTO expenses
+                        (id, date, store_name, amount, category,
+                         receipt_image_path, source, created_at, updated_at)
+                    SELECT id, date,
+                           COALESCE(description, ''),
+                           amount, category,
+                           receipt_image_path, source, created_at, updated_at
+                    FROM expenses_old;
+                    DROP TABLE expenses_old;
+                """)
+                await db.commit()
+                logger.info("expenses table migrated to new schema")
+
+            # Migrate moneyforward_transactions: old schema used different column names
+            try:
+                await db.execute(
+                    "SELECT is_calculation_target FROM moneyforward_transactions LIMIT 0"
+                )
+            except Exception:
+                await db.executescript("""
+                    ALTER TABLE moneyforward_transactions RENAME TO mf_transactions_old;
+                    CREATE TABLE moneyforward_transactions (
+                        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                        mf_id                 TEXT UNIQUE NOT NULL,
+                        is_calculation_target INTEGER DEFAULT 1,
+                        date                  TEXT NOT NULL,
+                        content               TEXT,
+                        amount                INTEGER NOT NULL,
+                        source_account        TEXT,
+                        large_category        TEXT,
+                        medium_category       TEXT,
+                        memo                  TEXT,
+                        is_transfer           INTEGER DEFAULT 0,
+                        matched_expense_id    INTEGER,
+                        imported_at           TEXT NOT NULL
+                    );
+                    INSERT INTO moneyforward_transactions
+                        (id, mf_id, is_calculation_target, date, content, amount,
+                         source_account, large_category, medium_category,
+                         memo, is_transfer, matched_expense_id, imported_at)
+                    SELECT id, mf_id,
+                           COALESCE(is_calculated, 1),
+                           date, content, amount,
+                           institution, category_large, category_medium,
+                           memo, is_transfer, matched_expense_id,
+                           COALESCE(created_at, datetime('now'))
+                    FROM mf_transactions_old;
+                    DROP TABLE mf_transactions_old;
+                """)
+                await db.commit()
+                logger.info("moneyforward_transactions table migrated to new schema")
 
         logger.info(f"DB 初期化完了: {self._db_path}")
 
@@ -637,30 +715,29 @@ class Database:
     async def save_mf_transaction(
         self,
         mf_id: str,
-        is_calculated: int,
+        is_calculation_target: int,
         date: str,
         content: str,
         amount: int,
-        institution: str,
-        category_large: str,
-        category_medium: str,
+        source_account: str,
+        large_category: str,
+        medium_category: str,
         memo: str,
         is_transfer: int,
     ) -> bool:
-        """INSERT OR IGNORE で重複スキップ。新規挿入なら True を返す。
-        / Insert with duplicate check; returns True if newly inserted."""
+        """INSERT OR IGNORE to skip duplicates. Returns True if newly inserted."""
         now = datetime.now().isoformat()
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
                 """
                 INSERT OR IGNORE INTO moneyforward_transactions
-                    (mf_id, is_calculated, date, content, amount,
-                     institution, category_large, category_medium,
-                     memo, is_transfer, match_status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                    (mf_id, is_calculation_target, date, content, amount,
+                     source_account, large_category, medium_category,
+                     memo, is_transfer, imported_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (mf_id, is_calculated, date, content, amount,
-                 institution, category_large, category_medium,
+                (mf_id, is_calculation_target, date, content, amount,
+                 source_account, large_category, medium_category,
                  memo, is_transfer, now),
             )
             await db.commit()
@@ -669,20 +746,24 @@ class Database:
     async def get_mf_transactions(
         self,
         month: str | None = None,
-        status: str | None = None,
+        unmatched_only: bool = False,
         limit: int = 50,
     ) -> list[dict]:
-        """月（YYYY-MM）・照合ステータスで絞り込んで返す。
-        / Filter by month and match_status."""
+        """Filter by month (YYYY-MM) and optional unmatched filter.
+        Always excludes transfer rows (is_transfer=1) and non-calculation rows
+        (is_calculation_target=0) when unmatched_only is True."""
         conditions: list[str] = []
         params: list = []
 
         if month:
             conditions.append("date LIKE ?")
             params.append(f"{month}%")
-        if status:
-            conditions.append("match_status = ?")
-            params.append(status)
+        if unmatched_only:
+            conditions.extend([
+                "matched_expense_id IS NULL",
+                "is_transfer = 0",
+                "is_calculation_target = 1",
+            ])
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
@@ -697,22 +778,27 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def update_mf_match_status(
-        self,
-        mf_id: str,
-        status: str,
-        matched_expense_id: int | None = None,
-    ) -> None:
-        """照合ステータスと紐付け expense_id を更新する。
-        / Update match_status and linked expense id."""
+    async def match_expense_to_mf(self, expense_id: int, mf_id: str) -> None:
+        """Link an expense to a MoneyForward transaction and mark both as matched.
+        Updates expenses.moneyforward_matched + moneyforward_id,
+        and moneyforward_transactions.matched_expense_id in a single transaction."""
+        now = datetime.now().isoformat()
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """
+                UPDATE expenses
+                SET moneyforward_matched=1, moneyforward_id=?, updated_at=?
+                WHERE id=?
+                """,
+                (mf_id, now, expense_id),
+            )
+            await db.execute(
+                """
                 UPDATE moneyforward_transactions
-                SET match_status=?, matched_expense_id=?
+                SET matched_expense_id=?
                 WHERE mf_id=?
                 """,
-                (status, matched_expense_id, mf_id),
+                (expense_id, mf_id),
             )
             await db.commit()
 
@@ -723,10 +809,13 @@ class Database:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT category_large, SUM(amount) AS total, COUNT(*) AS cnt
+                SELECT large_category, SUM(amount) AS total, COUNT(*) AS cnt
                 FROM moneyforward_transactions
-                WHERE date LIKE ? AND is_transfer = 0 AND amount < 0
-                GROUP BY category_large
+                WHERE date LIKE ?
+                  AND is_transfer = 0
+                  AND is_calculation_target = 1
+                  AND amount < 0
+                GROUP BY large_category
                 ORDER BY total ASC
                 """,
                 (f"{month}%",),
@@ -734,7 +823,7 @@ class Database:
             rows = await cursor.fetchall()
             summary: dict = {}
             for row in rows:
-                cat = row["category_large"] or "未分類"
+                cat = row["large_category"] or "未分類"
                 summary[cat] = {
                     "total": abs(row["total"]),
                     "count": row["cnt"],
@@ -834,26 +923,147 @@ class Database:
 
     # ── Expense CRUD ───────────────────────────────────────────────────────
 
+    _ALLOWED_EXPENSE_FIELDS = frozenset({
+        "date", "store_name", "amount", "tax_amount", "category",
+        "subcategory", "payment_method", "receipt_image_path",
+        "moneyforward_matched", "moneyforward_id", "note", "source",
+    })
+
     async def save_expense(
         self,
         date: str,
-        description: str,
+        store_name: str,
         amount: int,
         category: str = "",
+        tax_amount: int | None = None,
+        subcategory: str | None = None,
+        payment_method: str = "cash",
+        receipt_image_path: str | None = None,
+        note: str | None = None,
         source: str = "manual",
     ) -> int:
-        """経費を保存して lastrowid を返す。
-        / Save an expense and return its id."""
+        """Insert a new expense and return its id."""
         now = datetime.now().isoformat()
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
                 """
                 INSERT INTO expenses
-                    (date, description, amount, category, source,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (date, store_name, amount, tax_amount, category,
+                     subcategory, payment_method, receipt_image_path,
+                     note, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (date, description, amount, category, source, now, now),
+                (date, store_name, amount, tax_amount, category,
+                 subcategory, payment_method, receipt_image_path,
+                 note, source, now, now),
             )
             await db.commit()
             return cursor.lastrowid
+
+    async def get_expenses(
+        self,
+        month: str | None = None,
+        category: str | None = None,
+        unmatched_only: bool = False,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return expenses filtered by month (YYYY-MM), category, and match status."""
+        conditions: list[str] = []
+        params: list = []
+
+        if month:
+            conditions.append("date LIKE ?")
+            params.append(f"{month}%")
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+        if unmatched_only:
+            conditions.append("moneyforward_matched = 0")
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"SELECT * FROM expenses {where} ORDER BY date DESC LIMIT ?",
+                params,
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_monthly_summary(self, year: int, month: int) -> list[dict]:
+        """Return per-category totals for the given year/month.
+        Result: [{category, total_amount, count}, ...] sorted by total descending."""
+        month_str = f"{year:04d}-{month:02d}"
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT category, SUM(amount) AS total_amount, COUNT(*) AS count
+                FROM expenses
+                WHERE date LIKE ?
+                GROUP BY category
+                ORDER BY total_amount DESC
+                """,
+                (f"{month_str}%",),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_annual_summary(self, year: int) -> list[dict]:
+        """Return per-category totals for the given year.
+        Result: [{category, total_amount, count}, ...] sorted by total descending."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT category, SUM(amount) AS total_amount, COUNT(*) AS count
+                FROM expenses
+                WHERE date LIKE ?
+                GROUP BY category
+                ORDER BY total_amount DESC
+                """,
+                (f"{year:04d}%",),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def update_expense(self, expense_id: int, **fields) -> None:
+        """Update arbitrary expense fields by keyword argument.
+        Only whitelisted column names are accepted to prevent SQL injection."""
+        invalid = set(fields) - self._ALLOWED_EXPENSE_FIELDS
+        if invalid:
+            raise ValueError(f"Invalid expense fields: {invalid}")
+        if not fields:
+            return
+        now = datetime.now().isoformat()
+        fields["updated_at"] = now
+        set_clause = ", ".join(f"{k}=?" for k in fields)
+        values = list(fields.values()) + [expense_id]
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                f"UPDATE expenses SET {set_clause} WHERE id=?",
+                values,
+            )
+            await db.commit()
+
+    async def delete_expense(self, expense_id: int) -> None:
+        """Permanently delete an expense row."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
+            await db.commit()
+
+    async def get_unmatched_expenses(self) -> list[dict]:
+        """Return all expenses that have not been matched to a MoneyForward transaction."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM expenses
+                WHERE moneyforward_matched = 0
+                ORDER BY date DESC
+                """,
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]

@@ -10,6 +10,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, date
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot
 from telegram.ext import (
@@ -23,6 +24,7 @@ from telegram.ext import (
 from gmail_client import send_email, mark_as_read
 from gemini_client import get_api_usage, refine_reply_draft
 from classifier import extract_email_address
+from expense_manager import CATEGORY_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +170,9 @@ def build_application(bot_token: str) -> Application:
 
     # インラインキーボードのコールバックハンドラー
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Photo handler — receipt OCR flow
+    app.add_handler(MessageHandler(filters.PHOTO, handle_receipt_photo))
 
     # Document ハンドラー（テキストハンドラーより前に登録）
     # Register before text handler to ensure proper priority
@@ -1323,7 +1328,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if not results:
             # 経費テーブルが空 → 未確認の MF 取引を表示
-            pending_mf = await db.get_mf_transactions(status="pending", limit=5)
+            pending_mf = await db.get_mf_transactions(unmatched_only=True, limit=5)
             if not pending_mf:
                 await query.edit_message_text("✅ 未照合の取引はありません。")
                 return
@@ -1337,7 +1342,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 date_disp = mf.get("date", "")[:10]
                 content_disp = html.escape(mf.get("content", "（内容不明）"))
                 amount = mf.get("amount", 0)
-                cat = html.escape(mf.get("category_large", "未分類"))
+                cat = html.escape(mf.get("large_category", "未分類"))
                 text = (
                     f"📝 <b>{date_disp}</b> {content_disp}\n"
                     f"金額：¥{abs(amount):,} / カテゴリ：{cat}"
@@ -1358,7 +1363,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for item in results[:5]:
                 expense = item["expense"]
                 candidates = item["candidates"]
-                exp_desc = html.escape(expense.get("description", ""))
+                exp_desc = html.escape(expense.get("store_name", ""))
                 exp_date = expense.get("date", "")[:10]
                 exp_amount = expense.get("amount", 0)
                 lines = [
@@ -1401,15 +1406,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         db = context.bot_data.get("db")
         if db:
             exp_id = int(exp_id_str) if exp_id_str.isdigit() else 0
-            await db.update_mf_match_status(mft_id, "matched", exp_id if exp_id else None)
+            if exp_id:
+                await db.match_expense_to_mf(exp_id, mft_id)
         await query.edit_message_text("✅ 照合を確定しました。/ Match confirmed.")
 
     elif data.startswith("ematch_no:"):
         # "ematch_no:{mft_id}"
         mft_id = data.split(":", 1)[1]
-        db = context.bot_data.get("db")
-        if db:
-            await db.update_mf_match_status(mft_id, "ignored")
         await query.edit_message_text("❌ 現金払い（照合なし）として登録しました。/ Marked as cash (no match).")
 
     elif data == "expense_annual":
@@ -1439,6 +1442,95 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data == "expense_later":
         await query.edit_message_text("了解です。/expense でいつでも確認できます。")
+
+    # ── Receipt photo approval flow ──────────────────────────────────────────
+
+    elif data == "rcpt_save":
+        chat_id = str(update.effective_chat.id)
+        db = context.bot_data.get("db")
+        pending = context.bot_data.get("pending_receipts", {}).pop(chat_id, None)
+        if not pending or not db:
+            await query.edit_message_text("⚠️ 保存するレシートが見つかりません。")
+            return
+        ocr = pending["ocr"]
+        try:
+            await db.save_expense(
+                date=ocr.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                store_name=ocr.get("store_name") or "不明",
+                amount=ocr.get("total") or 0,
+                category=pending["category"],
+                tax_amount=ocr.get("tax"),
+                subcategory=pending.get("subcategory"),
+                payment_method=ocr.get("payment_method") or "cash",
+                receipt_image_path=pending["image_path"],
+                source="receipt_photo",
+            )
+            await query.edit_message_text(
+                f"✅ <b>保存しました</b>\n"
+                f"店名: {html.escape(ocr.get('store_name','不明'))} / "
+                f"¥{(ocr.get('total') or 0):,} / {html.escape(pending['category'])}",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Receipt save error: {e}")
+            await query.edit_message_text(f"⚠️ 保存エラー：{html.escape(str(e))}", parse_mode="HTML")
+
+    elif data == "rcpt_discard":
+        chat_id = str(update.effective_chat.id)
+        pending = context.bot_data.get("pending_receipts", {}).pop(chat_id, None)
+        if pending:
+            try:
+                Path(pending["image_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
+        await query.edit_message_text("❌ 破棄しました。/ Receipt discarded.")
+
+    elif data == "rcpt_edit":
+        chat_id = str(update.effective_chat.id)
+        pending = context.bot_data.get("pending_receipts", {}).get(chat_id)
+        if not pending:
+            await query.edit_message_text("⚠️ 対象のレシートが見つかりません。")
+            return
+        cats = list(CATEGORY_KEYWORDS.keys())
+        # Build 2-per-row keyboard
+        rows = []
+        for i in range(0, len(cats), 2):
+            row = [InlineKeyboardButton(cats[i], callback_data=f"rcpt_cat:{cats[i]}")]
+            if i + 1 < len(cats):
+                row.append(InlineKeyboardButton(cats[i + 1], callback_data=f"rcpt_cat:{cats[i + 1]}"))
+            rows.append(row)
+        rows.append([InlineKeyboardButton("⬅️ 戻る", callback_data="rcpt_back")])
+        await query.edit_message_text(
+            "📂 勘定科目を選択してください：",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
+    elif data.startswith("rcpt_cat:"):
+        chat_id = str(update.effective_chat.id)
+        new_category = data.split(":", 1)[1]
+        pending = context.bot_data.get("pending_receipts", {}).get(chat_id)
+        if not pending:
+            await query.edit_message_text("⚠️ 対象のレシートが見つかりません。")
+            return
+        pending["category"] = new_category
+        pending["subcategory"] = None
+        await query.edit_message_text(
+            _format_receipt_summary(pending["ocr"], new_category),
+            parse_mode="HTML",
+            reply_markup=_receipt_approval_keyboard(),
+        )
+
+    elif data == "rcpt_back":
+        chat_id = str(update.effective_chat.id)
+        pending = context.bot_data.get("pending_receipts", {}).get(chat_id)
+        if not pending:
+            await query.edit_message_text("⚠️ 対象のレシートが見つかりません。")
+            return
+        await query.edit_message_text(
+            _format_receipt_summary(pending["ocr"], pending["category"]),
+            parse_mode="HTML",
+            reply_markup=_receipt_approval_keyboard(),
+        )
 
     else:
         logger.warning(f"未知のコールバックデータ: {data}")
@@ -1928,6 +2020,103 @@ async def handle_expense_command(
         [InlineKeyboardButton("📋 年間レポート", callback_data="expense_annual")],
     ])
     await update.message.reply_text("💰 <b>経費管理</b>", parse_mode="HTML", reply_markup=keyboard)
+
+
+# ── Receipt photo helpers ────────────────────────────────────────────────────
+
+def _receipt_approval_keyboard() -> InlineKeyboardMarkup:
+    """Return the Save / Edit Category / Discard inline keyboard for receipt review."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ 保存",      callback_data="rcpt_save"),
+        InlineKeyboardButton("📝 科目変更",  callback_data="rcpt_edit"),
+        InlineKeyboardButton("❌ 破棄",      callback_data="rcpt_discard"),
+    ]])
+
+
+def _format_receipt_summary(ocr: dict, category: str) -> str:
+    """Return the HTML summary string shown after receipt OCR."""
+    date_str   = html.escape(ocr.get("date") or "不明")
+    store_str  = html.escape(ocr.get("store_name") or "不明")
+    total      = ocr.get("total") or 0
+    tax        = ocr.get("tax") or 0
+    items      = ocr.get("items") or []
+    item_names = " / ".join(
+        html.escape(it.get("name", "")) for it in items[:5] if it.get("name")
+    ) or "（品目なし）"
+    cat_str = html.escape(category)
+    return (
+        "🧾 <b>レシート読み取り結果</b>\n"
+        "─────────────\n"
+        f"📅 日付: {date_str}\n"
+        f"🏪 店名: {store_str}\n"
+        f"💰 金額: ¥{total:,}（消費税: ¥{tax:,}）\n"
+        f"📦 品目: {item_names}\n"
+        f"📂 勘定科目: {cat_str}（自動）\n"
+        "─────────────"
+    )
+
+
+async def handle_receipt_photo(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle an incoming photo message as a receipt.
+    Downloads, OCRs via Gemini vision, auto-categorizes, then shows a
+    Save / Edit / Discard approval flow.
+    """
+    expense_manager = context.bot_data.get("expense_manager")
+    db = context.bot_data.get("db")
+    if not expense_manager or not db:
+        await update.message.reply_text("⚠️ 経費マネージャーが初期化されていません。")
+        return
+
+    # Send placeholder while processing
+    placeholder = await update.message.reply_text("⏳ OCR 中... / Scanning receipt...")
+
+    # Save photo to data/receipts/
+    save_dir = Path("data/receipts")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".jpg"
+    save_path = save_dir / filename
+
+    try:
+        photo = update.message.photo[-1]  # largest available size
+        tg_file = await context.bot.get_file(photo.file_id)
+        await tg_file.download_to_drive(str(save_path))
+    except Exception as e:
+        logger.error(f"Receipt photo download error: {e}")
+        await placeholder.edit_text(f"⚠️ 画像の取得に失敗しました：{html.escape(str(e))}", parse_mode="HTML")
+        return
+
+    # OCR
+    try:
+        ocr = await expense_manager.analyze_receipt_image(str(save_path))
+    except Exception as e:
+        logger.error(f"Receipt OCR error: {e}")
+        ocr = {"store_name": "不明", "total": 0, "items": [], "tax": 0, "date": None}
+
+    # Auto-categorize
+    try:
+        category, subcategory = await expense_manager.auto_categorize(
+            ocr.get("store_name", "不明"), ocr.get("items", [])
+        )
+    except Exception as e:
+        logger.warning(f"Receipt auto-categorize error: {e}")
+        category, subcategory = "雑費", None
+
+    # Store pending state keyed by chat_id
+    chat_id = str(update.effective_chat.id)
+    context.bot_data.setdefault("pending_receipts", {})[chat_id] = {
+        "image_path": str(save_path),
+        "ocr": ocr,
+        "category": category,
+        "subcategory": subcategory,
+    }
+
+    await placeholder.edit_text(
+        _format_receipt_summary(ocr, category),
+        parse_mode="HTML",
+        reply_markup=_receipt_approval_keyboard(),
+    )
 
 
 async def handle_document(

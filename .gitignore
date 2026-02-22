@@ -26,3 +26,8 @@ contacts.md
 
 # SQLite DB
 data/*.db
+
+# Receipt photos (personal financial data)
+data/receipts/*.jpg
+data/receipts/*.jpeg
+data/receipts/*.png
