@@ -14,6 +14,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -567,4 +568,134 @@ async def api_update_contact_priority(
     new_content = content[:block_start] + new_block + content[block_end:]
     _CONTACTS_PATH.write_text(new_content, encoding="utf-8")
     logger.info(f"連絡先優先度を更新: {email} → {priority}")
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────
+# タスク管理エンドポイント / Task management endpoints
+# ─────────────────────────────────────────────
+
+# リクエストボディ定義 / Request body schemas
+class TaskCreateBody(BaseModel):
+    """タスク作成リクエストボディ / Request body for task creation."""
+    title: str
+    description: str | None = None
+    priority: str | None = "medium"   # urgent / high / medium / low
+    due_date: str | None = None       # "YYYY-MM-DD" 形式 / "YYYY-MM-DD" format
+
+
+class TaskUpdateBody(BaseModel):
+    """タスク部分更新リクエストボディ / Request body for partial task update.
+    None フィールドは更新されない。/ None fields are not updated."""
+    title: str | None = None
+    status: str | None = None         # todo / in_progress / done / cancelled
+    priority: str | None = None       # urgent / high / medium / low
+    due_date: str | None = None       # "YYYY-MM-DD" or "" to clear / "" でクリア
+
+
+@app.get("/api/tasks")
+async def api_tasks_list(
+    status: str | None = None,
+    priority: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """タスク一覧を返す。status / priority / limit でフィルタリング可能。
+    / Return task list. Supports filtering by status, priority, and limit."""
+    db = _bot_data.get("db")
+    if not db:
+        return []
+    return await db.get_tasks(status=status, priority=priority, limit=limit)
+
+
+@app.post("/api/tasks")
+async def api_tasks_create(body: TaskCreateBody) -> dict[str, Any]:
+    """新規タスクを作成する。ソースは 'manual' として保存する。
+    / Create a new task. Source is saved as 'manual'."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB が初期化されていません / DB not initialized")
+
+    task_id = await db.save_task(
+        title=body.title,
+        description=body.description or "",
+        source="manual",
+        priority=body.priority or "medium",
+        due_date=body.due_date or "",
+    )
+
+    push_event("info", f"📋 タスク追加: {body.title[:40]}", {"task_id": task_id})
+    logger.info(f"タスク作成: id={task_id}, title={body.title}")
+    return {"status": "ok", "id": task_id}
+
+
+# NOTE: /api/tasks/stats を /api/tasks/{task_id} より先に定義することで
+#       FastAPI が "stats" を task_id として誤認識しないようにする。
+# NOTE: Define /api/tasks/stats BEFORE /api/tasks/{task_id} so FastAPI
+#       does not treat the literal "stats" as a path parameter.
+@app.get("/api/tasks/stats")
+async def api_tasks_stats() -> dict[str, Any]:
+    """タスクの統計情報を返す（total / ステータス別 / 期限超過数）。
+    / Return task statistics (total, by status, overdue count)."""
+    db = _bot_data.get("db")
+    if not db:
+        return {"total": 0, "todo": 0, "in_progress": 0, "done": 0, "cancelled": 0, "overdue": 0}
+    return await db.get_task_stats()
+
+
+@app.put("/api/tasks/{task_id}")
+async def api_tasks_update(task_id: int, body: TaskUpdateBody) -> dict[str, str]:
+    """タスクのフィールドを部分更新する（status / priority / title / due_date）。
+    / Partially update task fields (status, priority, title, due_date)."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB が初期化されていません / DB not initialized")
+
+    updated = False
+
+    # ステータス更新 / Update status
+    if body.status is not None:
+        valid_statuses = {"todo", "in_progress", "done", "cancelled"}
+        if body.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"無効なステータス / Invalid status: {body.status}")
+        await db.update_task_status(task_id, body.status)
+        updated = True
+
+    # 優先度更新 / Update priority
+    if body.priority is not None:
+        valid_priorities = {"urgent", "high", "medium", "low"}
+        if body.priority not in valid_priorities:
+            raise HTTPException(status_code=400, detail=f"無効な優先度 / Invalid priority: {body.priority}")
+        await db.update_task_priority(task_id, body.priority)
+        updated = True
+
+    # タイトル更新 / Update title
+    if body.title is not None:
+        if not body.title.strip():
+            raise HTTPException(status_code=400, detail="タイトルは空にできません / Title cannot be empty")
+        await db.update_task_title(task_id, body.title.strip())
+        updated = True
+
+    # 期日更新（空文字列で NULL クリア）/ Update due_date (empty string clears to NULL)
+    if body.due_date is not None:
+        await db.update_task_due_date(task_id, body.due_date)
+        updated = True
+
+    if not updated:
+        raise HTTPException(status_code=400, detail="更新フィールドが指定されていません / No fields to update")
+
+    logger.info(f"タスク更新: id={task_id}, fields={body.model_fields_set}")
+    return {"status": "ok"}
+
+
+@app.delete("/api/tasks/{task_id}")
+async def api_tasks_delete(task_id: int) -> dict[str, str]:
+    """タスクを削除する。
+    / Delete a task."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB が初期化されていません / DB not initialized")
+
+    await db.delete_task(task_id)
+    push_event("info", f"🗑️ タスク削除: id={task_id}", {"task_id": task_id})
+    logger.info(f"タスク削除: id={task_id}")
     return {"status": "ok"}

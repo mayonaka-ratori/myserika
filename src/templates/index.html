@@ -868,6 +868,201 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
     ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+
+    /* ─── Task board / タスクボード ─── */
+
+    /* 3列グリッドレイアウト / 3-column grid layout */
+    .task-board {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    /* 各列のラッパー / Column wrapper */
+    .task-column {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 列ごとのアクセントカラー / Per-column accent color */
+    .task-column.col-todo       { border-top: 2px solid var(--info); }
+    .task-column.col-inprogress { border-top: 2px solid var(--warn); }
+    .task-column.col-done       { border-top: 2px solid var(--success); }
+
+    /* 列ヘッダー / Column header */
+    .task-col-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--card-border);
+      color: var(--text);
+    }
+
+    /* 列ヘッダー内のカウントバッジ / Count badge inside column header */
+    .task-col-count {
+      margin-left: auto;
+      background: var(--card-border);
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 10px;
+      min-width: 18px;
+      text-align: center;
+    }
+
+    /* 列のカードコンテナ / Card container inside column */
+    .task-col-body {
+      flex: 1;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      max-height: 520px;
+    }
+
+    /* タスクカード / Task card */
+    .task-card {
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 11px 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .task-card:hover {
+      border-color: var(--accent);
+      background: rgba(124, 92, 191, 0.06);
+    }
+
+    /* カード上部：優先度バッジ + ソースアイコン / Card top row: priority badge + source icon */
+    .task-card-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    /* 優先度バッジ / Priority badge */
+    .task-priority-badge {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    /* 優先度ごとの色 / Color per priority */
+    .task-priority-badge.urgent { background: rgba(244, 67, 54, 0.2);  color: var(--danger); }
+    .task-priority-badge.high   { background: rgba(255, 152, 0, 0.2);  color: var(--warn); }
+    .task-priority-badge.medium { background: rgba(255, 193, 7, 0.15); color: #ffc107; }
+    .task-priority-badge.low    { background: rgba(33, 150, 243, 0.2); color: var(--info); }
+
+    /* ソースアイコン / Source icon */
+    .task-source-icon {
+      margin-left: auto;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+
+    /* タスクタイトル / Task title */
+    .task-title {
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.4;
+      margin-bottom: 7px;
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    /* 期日表示 / Due date display */
+    .task-date {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    /* 期日超過ハイライト / Overdue highlight */
+    .task-date.overdue {
+      color: var(--danger);
+      font-weight: 600;
+    }
+
+    /* カード内アクションボタン群 / Action buttons inside card */
+    .task-actions {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    /* 新規タスクフォームの行 / New task form row */
+    .task-form-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .task-form-row .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .task-form-row .form-group label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    /* フォーム用インプット（search-bar を継承しつつ margin 上書き）*/
+    /* Form input inheriting search-bar but overriding margin */
+    .task-form-input {
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+      padding: 7px 11px;
+      outline: none;
+      width: 100%;
+    }
+
+    .task-form-input:focus { border-color: var(--accent); }
+    .task-form-input::placeholder { color: var(--text-dim); }
+
+    /* フォーム用セレクト / Form select */
+    .task-form-select {
+      background: var(--surface);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+      padding: 7px 11px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .task-form-select:focus { border-color: var(--accent); }
+
+    /* タスク詳細モーダル内ラベル / Label inside task detail modal */
+    .task-modal-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      display: block;
+      margin-bottom: 5px;
+    }
   </style>
 </head>
 <body>
@@ -904,6 +1099,11 @@
     </div>
     <div class="nav-item" data-view="contacts" onclick="showView('contacts', this)">
       <span class="nav-icon">👥</span> 連絡先
+    </div>
+    <!-- タスクボード / Task board -->
+    <div class="nav-item" data-view="tasks" onclick="showView('tasks', this)">
+      <span class="nav-icon">📋</span> タスク
+      <span class="badge" id="nav-tasks-count">0</span>
     </div>
     <div class="nav-item" data-view="settings" onclick="showView('settings', this)">
       <span class="nav-icon">⚙️</span> 設定
@@ -1067,6 +1267,115 @@
       </div>
     </div><!-- /contacts -->
 
+    <!-- ═══ タスクボードビュー / Task board view ═══ -->
+    <div class="view" id="view-tasks" hidden>
+      <div class="view-title"><span>📋</span> タスク</div>
+
+      <!-- 統計行 / Stats row -->
+      <div class="stats-row">
+        <div class="stat-item">
+          <div class="stat-value accent" id="task-stat-total">0</div>
+          <div class="stat-label">合計</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value info" id="task-stat-todo">0</div>
+          <div class="stat-label">Todo</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value warn" id="task-stat-inprogress">0</div>
+          <div class="stat-label">進行中</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value success" id="task-stat-done">0</div>
+          <div class="stat-label">完了</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value danger" id="task-stat-overdue">0</div>
+          <div class="stat-label">期限超過</div>
+        </div>
+      </div>
+
+      <!-- 新規タスクフォーム / New task form -->
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-header"><span class="icon">➕</span> タスクを追加</div>
+        <div class="task-form-row">
+          <!-- タイトル入力 / Title input -->
+          <div class="form-group" style="flex:2;min-width:200px;">
+            <label>タイトル / Title</label>
+            <input type="text" id="new-task-title" class="task-form-input"
+                   placeholder="タスクのタイトルを入力..."
+                   onkeydown="if(event.key==='Enter')createTask()">
+          </div>
+          <!-- 期日 / Due date -->
+          <div class="form-group" style="flex:1;min-width:140px;">
+            <label>期日 / Due date</label>
+            <input type="date" id="new-task-due" class="task-form-input">
+          </div>
+          <!-- 優先度 / Priority -->
+          <div class="form-group" style="min-width:130px;">
+            <label>優先度 / Priority</label>
+            <select id="new-task-priority" class="task-form-select">
+              <option value="urgent">🔴 P1 緊急</option>
+              <option value="high">🟠 P2 高</option>
+              <option value="medium" selected>🟡 P3 中</option>
+              <option value="low">🔵 P4 低</option>
+            </select>
+          </div>
+          <!-- 追加ボタン / Add button -->
+          <div class="form-group" style="justify-content:flex-end;">
+            <label style="visibility:hidden;">-</label>
+            <button class="btn btn-primary" onclick="createTask()" style="white-space:nowrap;">
+              ➕ 追加
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3列タスクボード / 3-column task board -->
+      <div class="task-board">
+
+        <!-- Todo 列 / Todo column -->
+        <div class="task-column col-todo">
+          <div class="task-col-header">
+            <span>📌 Todo</span>
+            <span class="task-col-count" id="col-todo-count">0</span>
+          </div>
+          <div class="task-col-body" id="col-todo-body">
+            <div class="empty-state" style="padding:24px 16px;">
+              <div class="empty-icon">📭</div>タスクなし
+            </div>
+          </div>
+        </div>
+
+        <!-- In Progress 列 / In Progress column -->
+        <div class="task-column col-inprogress">
+          <div class="task-col-header">
+            <span>▶ 進行中</span>
+            <span class="task-col-count" id="col-inprogress-count">0</span>
+          </div>
+          <div class="task-col-body" id="col-inprogress-body">
+            <div class="empty-state" style="padding:24px 16px;">
+              <div class="empty-icon">📭</div>タスクなし
+            </div>
+          </div>
+        </div>
+
+        <!-- Done 列 / Done column -->
+        <div class="task-column col-done">
+          <div class="task-col-header">
+            <span>✅ 完了</span>
+            <span class="task-col-count" id="col-done-count">0</span>
+          </div>
+          <div class="task-col-body" id="col-done-body">
+            <div class="empty-state" style="padding:24px 16px;">
+              <div class="empty-icon">📭</div>タスクなし
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /task-board -->
+    </div><!-- /tasks -->
+
     <!-- ═══ 設定ビュー ═══ -->
     <div class="view" id="view-settings" hidden>
       <div class="view-title"><span>⚙️</span> 設定</div>
@@ -1143,6 +1452,45 @@
   </main>
 </div>
 
+<!-- Task detail / edit modal / タスク詳細・編集モーダル -->
+<div class="modal-overlay" id="task-modal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-title">📋 タスク詳細</div>
+
+    <!-- タイトル編集 / Title edit -->
+    <div style="margin-bottom:14px;">
+      <label class="task-modal-label">タイトル / Title</label>
+      <input type="text" id="task-edit-title" class="task-form-input" placeholder="タスクタイトル">
+    </div>
+
+    <!-- 期日 + 優先度 行 / Due date + priority row -->
+    <div style="display:flex;gap:12px;margin-bottom:20px;">
+      <div style="flex:1;">
+        <label class="task-modal-label">期日 / Due date</label>
+        <input type="date" id="task-edit-due" class="task-form-input">
+      </div>
+      <div style="flex:1;">
+        <label class="task-modal-label">優先度 / Priority</label>
+        <select id="task-edit-priority" class="task-form-select" style="width:100%;">
+          <option value="urgent">🔴 P1 緊急</option>
+          <option value="high">🟠 P2 高</option>
+          <option value="medium">🟡 P3 中</option>
+          <option value="low">🔵 P4 低</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- ボタン行: 削除（左）・キャンセル + 保存（右）/ Buttons: delete (left), cancel + save (right) -->
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;">
+      <button class="btn btn-reject" onclick="deleteTaskFromModal()">🗑️ 削除</button>
+      <div style="display:flex;gap:8px;">
+        <button class="modal-close" onclick="closeTaskModal()">キャンセル</button>
+        <button class="btn btn-primary" onclick="saveTaskEdit()">💾 保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Draft modal -->
 <div class="modal-overlay" id="draft-modal">
   <div class="modal">
@@ -1196,6 +1544,12 @@
     }
     if (id === 'mail') {
       fetchMailTab(_currentMailTab || 'pending');
+    }
+    // タスクビューを初めて開いたときにデータを取得する
+    // Fetch task data the first time the tasks view is opened
+    if (id === 'tasks') {
+      fetchTasks();
+      fetchTaskStats();
     }
   }
 
@@ -1928,11 +2282,313 @@
       .replace(/"/g, '&quot;');
   }
 
+  // ════════════════════════════════════════════════
+  // タスク管理 / Task management
+  // ════════════════════════════════════════════════
+
+  // タスクキャッシュ・状態変数 / Task cache and state variables
+  let _tasksData    = [];    // 全タスクキャッシュ / Full task list cache
+  let _tasksLoaded  = false; // 初回ロード済みフラグ / First load flag
+  let _currentTaskId = null; // 編集中タスク ID / Currently editing task ID
+
+  // タスク一覧を API から取得してボードを描画する
+  // Fetch task list from API and render the board
+  async function fetchTasks() {
+    try {
+      const res = await fetch('/api/tasks?limit=200');
+      if (!res.ok) return;
+      const tasks = await res.json();
+      _tasksData   = tasks;
+      _tasksLoaded = true;
+      renderTaskBoard(tasks);
+    } catch (e) {
+      console.warn('fetchTasks error', e);
+    }
+  }
+
+  // タスク統計を取得してナビバッジと統計行を更新する
+  // Fetch task stats and update nav badge + stats row
+  async function fetchTaskStats() {
+    try {
+      const res = await fetch('/api/tasks/stats');
+      if (!res.ok) return;
+      const s = await res.json();
+
+      // ナビゲーションバッジ（Todo + 進行中の合計）/ Nav badge (todo + in_progress total)
+      const active   = (s.todo || 0) + (s.in_progress || 0);
+      const navBadge = document.getElementById('nav-tasks-count');
+      if (navBadge) navBadge.textContent = active;
+
+      // 統計行の各セル / Stats row cells
+      _setEl('task-stat-total',      s.total       || 0);
+      _setEl('task-stat-todo',       s.todo        || 0);
+      _setEl('task-stat-inprogress', s.in_progress || 0);
+      _setEl('task-stat-done',       s.done        || 0);
+      _setEl('task-stat-overdue',    s.overdue     || 0);
+    } catch (e) {
+      console.warn('fetchTaskStats error', e);
+    }
+  }
+
+  // 指定 ID の要素テキストを更新するユーティリティ
+  // Utility: set text content of element by id
+  function _setEl(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  }
+
+  // タスクを 3 列ボードに描画する / Render tasks into the 3-column board
+  function renderTaskBoard(tasks) {
+    const colTodo   = document.getElementById('col-todo-body');
+    const colInProg = document.getElementById('col-inprogress-body');
+    const colDone   = document.getElementById('col-done-body');
+    if (!colTodo || !colInProg || !colDone) return;
+
+    // ステータスでグループ分け / Group by status
+    const todo       = tasks.filter(t => t.status === 'todo');
+    const inProgress = tasks.filter(t => t.status === 'in_progress');
+    const done       = tasks.filter(t => t.status === 'done');
+
+    // 列ヘッダーのカウントバッジを更新 / Update column header count badges
+    _setEl('col-todo-count',       todo.length);
+    _setEl('col-inprogress-count', inProgress.length);
+    _setEl('col-done-count',       done.length);
+
+    // 空のときの表示 / Empty state HTML
+    const emptyHTML = `<div class="empty-state" style="padding:24px 16px;">
+      <div class="empty-icon">📭</div>タスクなし</div>`;
+
+    colTodo.innerHTML   = todo.length       ? todo.map(renderTaskCard).join('')       : emptyHTML;
+    colInProg.innerHTML = inProgress.length ? inProgress.map(renderTaskCard).join('') : emptyHTML;
+    colDone.innerHTML   = done.length       ? done.map(renderTaskCard).join('')       : emptyHTML;
+  }
+
+  // 今日の日付を "YYYY-MM-DD" 形式で返す / Return today's date as "YYYY-MM-DD"
+  function _todayStr() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  // 優先度の表示ラベルを返す / Return display label for priority
+  function _priorityLabel(p) {
+    return { urgent: 'P1 緊急', high: 'P2 高', medium: 'P3 中', low: 'P4 低' }[p] || p || '-';
+  }
+
+  // ソースのアイコン文字を返す / Return icon character for task source
+  function _sourceIcon(s) {
+    return { email: '📧', discord: '💬', calendar: '📅', manual: '✏️' }[s] || '✏️';
+  }
+
+  // タスクカードの HTML 文字列を生成する / Generate task card HTML string
+  function renderTaskCard(task) {
+    const priority  = task.priority || 'medium';
+    const status    = task.status   || 'todo';
+    const dueDate   = task.due_date  ? String(task.due_date).slice(0, 10) : '';
+    const today     = _todayStr();
+    const isOverdue = dueDate && dueDate < today && status !== 'done';
+
+    // 期日表示 HTML / Due date display HTML
+    const dueDateHTML = dueDate
+      ? `<div class="task-date ${isOverdue ? 'overdue' : ''}">${isOverdue ? '⚠️ ' : '📅 '}${esc(dueDate)}</div>`
+      : '';
+
+    // ステータス遷移ボタン（カード上のワンクリック操作）
+    // Status transition buttons (one-click action on the card)
+    let actionBtns = '';
+    if (status === 'todo') {
+      // Todo → In Progress
+      actionBtns = `<button class="btn" style="font-size:11px;background:rgba(33,150,243,0.15);color:var(--info);border:1px solid rgba(33,150,243,0.3);"
+          onclick="changeTaskStatus(${task.id},'in_progress');event.stopPropagation()">▶ 開始</button>`;
+    } else if (status === 'in_progress') {
+      // In Progress → Todo or Done
+      actionBtns = `
+        <button class="btn btn-secondary" style="font-size:11px;"
+            onclick="changeTaskStatus(${task.id},'todo');event.stopPropagation()">← 戻す</button>
+        <button class="btn btn-approve" style="font-size:11px;"
+            onclick="changeTaskStatus(${task.id},'done');event.stopPropagation()">✅ 完了</button>`;
+    } else if (status === 'done') {
+      // Done → In Progress
+      actionBtns = `<button class="btn btn-secondary" style="font-size:11px;"
+          onclick="changeTaskStatus(${task.id},'in_progress');event.stopPropagation()">↩ 戻す</button>`;
+    }
+
+    return `
+      <div class="task-card" onclick="openTaskDetail(${task.id})">
+        <div class="task-card-top">
+          <span class="task-priority-badge ${esc(priority)}">${esc(_priorityLabel(priority))}</span>
+          <span class="task-source-icon" title="${esc(task.source || 'manual')}">${_sourceIcon(task.source)}</span>
+        </div>
+        <div class="task-title">${esc(task.title)}</div>
+        ${dueDateHTML}
+        <div class="task-actions">${actionBtns}</div>
+      </div>`;
+  }
+
+  // タスクのステータスを変更する / Change task status via API
+  async function changeTaskStatus(taskId, newStatus) {
+    try {
+      const res = await fetch('/api/tasks/' + taskId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        showToast('❌ エラー: ' + (d.detail || '更新失敗'));
+        return;
+      }
+      showToast('✅ ステータスを更新しました');
+      // ボードとバッジを再取得 / Refresh board and badge
+      fetchTasks();
+      fetchTaskStats();
+    } catch (e) {
+      showToast('❌ ネットワークエラー: ' + e);
+    }
+  }
+
+  // 新規タスクを作成する / Create a new task via API
+  async function createTask() {
+    const titleEl    = document.getElementById('new-task-title');
+    const dueEl      = document.getElementById('new-task-due');
+    const priorityEl = document.getElementById('new-task-priority');
+
+    const title = titleEl?.value.trim();
+    if (!title) {
+      showToast('⚠️ タイトルを入力してください');
+      titleEl?.focus();
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          due_date: dueEl?.value  || null,
+          priority: priorityEl?.value || 'medium',
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        showToast('❌ エラー: ' + (d.detail || '作成失敗'));
+        return;
+      }
+      showToast('✅ タスクを追加しました: ' + title);
+      // フォームをリセット / Reset form fields
+      if (titleEl)    titleEl.value    = '';
+      if (dueEl)      dueEl.value      = '';
+      if (priorityEl) priorityEl.value = 'medium';
+      fetchTasks();
+      fetchTaskStats();
+    } catch (e) {
+      showToast('❌ ネットワークエラー: ' + e);
+    }
+  }
+
+  // タスク詳細モーダルを開いてフォームに値を埋める
+  // Open task detail modal and populate the edit form
+  function openTaskDetail(taskId) {
+    const task = _tasksData.find(t => t.id === taskId);
+    if (!task) return;
+    _currentTaskId = taskId;
+
+    const titleEl    = document.getElementById('task-edit-title');
+    const dueEl      = document.getElementById('task-edit-due');
+    const priorityEl = document.getElementById('task-edit-priority');
+
+    if (titleEl)    titleEl.value    = task.title    || '';
+    if (dueEl)      dueEl.value      = (task.due_date || '').slice(0, 10);
+    if (priorityEl) priorityEl.value = task.priority || 'medium';
+
+    document.getElementById('task-modal').classList.add('open');
+  }
+
+  // タスク詳細モーダルを閉じる / Close task detail modal
+  function closeTaskModal() {
+    document.getElementById('task-modal').classList.remove('open');
+    _currentTaskId = null;
+  }
+
+  // タスク編集内容を保存する / Save task edits via API
+  async function saveTaskEdit() {
+    if (_currentTaskId === null) return;
+
+    const titleEl    = document.getElementById('task-edit-title');
+    const dueEl      = document.getElementById('task-edit-due');
+    const priorityEl = document.getElementById('task-edit-priority');
+
+    const title = titleEl?.value.trim();
+    if (!title) {
+      showToast('⚠️ タイトルを入力してください');
+      titleEl?.focus();
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/tasks/' + _currentTaskId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          // 空文字列を送ると期日が NULL クリアされる / Empty string clears due date to NULL
+          due_date: dueEl?.value ?? '',
+          priority: priorityEl?.value || 'medium',
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        showToast('❌ エラー: ' + (d.detail || '保存失敗'));
+        return;
+      }
+      showToast('✅ タスクを保存しました');
+      closeTaskModal();
+      fetchTasks();
+      fetchTaskStats();
+    } catch (e) {
+      showToast('❌ ネットワークエラー: ' + e);
+    }
+  }
+
+  // タスクを削除する（モーダルから）/ Delete task (from detail modal)
+  async function deleteTaskFromModal() {
+    if (_currentTaskId === null) return;
+
+    const task  = _tasksData.find(t => t.id === _currentTaskId);
+    const title = task?.title || 'このタスク';
+
+    // 削除確認 / Confirm deletion
+    if (!confirm(`「${title}」を削除しますか？\nこの操作は元に戻せません。`)) return;
+
+    try {
+      const res = await fetch('/api/tasks/' + _currentTaskId, { method: 'DELETE' });
+      if (!res.ok) {
+        const d = await res.json();
+        showToast('❌ エラー: ' + (d.detail || '削除失敗'));
+        return;
+      }
+      showToast('🗑️ タスクを削除しました');
+      closeTaskModal();
+      fetchTasks();
+      fetchTaskStats();
+    } catch (e) {
+      showToast('❌ ネットワークエラー: ' + e);
+    }
+  }
+
+  // タスクモーダルのオーバーレイクリックで閉じる
+  // Close task modal when clicking the overlay background
+  document.getElementById('task-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeTaskModal();
+  });
+
   // ─── 初期化 ───
   fetchStatus();
   fetchApiUsage();
+  // タスク統計は起動時とその後30秒毎に取得 / Fetch task stats on startup, then every 30s
+  fetchTaskStats();
   setInterval(fetchStatus, 5000);
   setInterval(fetchApiUsage, 30000);
+  setInterval(fetchTaskStats, 30000);
   connectWS();
 </script>
 </body>

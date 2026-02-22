@@ -559,6 +559,17 @@ class Database:
             )
             await db.commit()
 
+    async def update_task_due_date(self, task_id: int, due_date: str) -> None:
+        """タスクの期日を更新する。空文字列を渡すと NULL にクリアされる。
+        / Update task due date. Passing an empty string clears it to NULL."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET due_date=?, updated_at=? WHERE id=?",
+                (due_date if due_date else None, now, task_id),
+            )
+            await db.commit()
+
     async def get_upcoming_reminders(self, hours_before: int = 3) -> list[dict]:
         """
         hours_before 時間以内に期日が来るタスクで、まだ reminded_at が NULL のものを返す。
