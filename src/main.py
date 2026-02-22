@@ -645,6 +645,7 @@ async def main_loop(config: dict) -> None:
         "pending_approvals": {},
         "awaiting_revision": None,
         "awaiting_discord_reply": None,
+        "awaiting_discord_draft_edit": None,  # msg_key when editing a Discord draft
         "retry_queue": [],
         # 🔄 再チェックボタン用: コールバックから呼び出せるようにする
         "_recheck_fn": check_and_process_emails,
@@ -700,9 +701,11 @@ async def main_loop(config: dict) -> None:
                 chat_id=chat_id,
                 gemini_client=gemini_client,
                 task_manager=task_manager,
+                db=db,
             )
             asyncio.create_task(discord_monitor.start(discord_cfg["bot_token"]))
             asyncio.create_task(discord_monitor.run_summary_scheduler())
+            asyncio.create_task(discord_monitor.run_unreplied_reminder_loop())
             telegram_app.bot_data["discord_client"] = discord_monitor
             logger.info("Discord クライアント起動タスクを開始しました")
         except Exception as e:

@@ -357,6 +357,106 @@ def generate_reply_draft(
         )
 
 
+def generate_discord_reply(
+    client_data: dict,
+    sender: str,
+    message: str,
+    channel_name: str,
+    conversation_history: list[dict],
+    discord_style: str = "",
+) -> dict:
+    """
+    Discord メンション/DM に対するカジュアルな返信案を Gemini で生成する。
+    メール返信（丁寧・フォーマル）とは異なり、Discord の文体（カジュアル・絵文字あり）に合わせる。
+    / Generate a casual reply draft for a Discord mention or DM using Gemini.
+    Unlike email replies (formal), this matches Discord's casual style with emoji.
+
+    引数 / Args:
+        client_data: Gemini クライアント辞書 / Gemini client dict
+        sender: 送信者の表示名 / Sender's display name
+        message: 受信したメッセージ本文 / Received message content
+        channel_name: チャンネル名（DM の場合は "DM"）/ Channel name ("DM" for direct messages)
+        conversation_history: 直近最大10件の会話履歴 / Up to 10 recent messages as context
+            [{author: str, content: str, timestamp: str}, ...]
+        discord_style: MEMORY.md から読み込んだスタイルプロファイル / Style profile from MEMORY.md
+
+    戻り値 / Returns:
+        {"reply_text": str, "confidence": float}
+        confidence: スタイル再現度の推定値（0.0–1.0）/ Estimated style match score (0.0–1.0)
+    """
+    # スタイルプロファイルセクション / Style profile section for the prompt
+    style_section = ""
+    if discord_style.strip():
+        excerpt = discord_style.strip()[:800]
+        style_section = (
+            f"\n【あなたの Discord 文体プロファイル / Your Discord style profile】\n"
+            f"{excerpt}\n"
+            f"上記の文体を可能な限り再現して返信してください。\n"
+            f"/ Reproduce the above style as closely as possible in your reply.\n"
+        )
+
+    # 会話履歴の整形 / Format conversation history
+    history_lines = []
+    for m in conversation_history:
+        ts      = m.get("timestamp", "")
+        author  = m.get("author",    "")
+        content = m.get("content",   "")
+        history_lines.append(f"[{ts}] {author}: {content}")
+    history_section = ""
+    if history_lines:
+        history_section = (
+            "\n【直近の会話コンテキスト / Recent conversation context】\n"
+            + "\n".join(history_lines)
+            + "\n"
+        )
+
+    prompt = (
+        f"以下の Discord メッセージへの返信案を日本語で生成してください。\n"
+        f"/ Generate a reply to the following Discord message in Japanese.\n"
+        f"{style_section}"
+        f"{history_section}"
+        f"\n【チャンネル / Channel】{channel_name}"
+        f"\n【送信者 / Sender】{sender}"
+        f"\n【メッセージ / Message】\n{message}\n\n"
+        f"重要なルール / Important rules:\n"
+        f"- Discord のカジュアルな文体で返信すること（メールのような敬語は不要）\n"
+        f"  / Use casual Discord tone (formal email-style keigo is NOT needed)\n"
+        f"- スタイルプロファイルに記載の絵文字・表現を積極的に使うこと\n"
+        f"  / Actively use emoji and expressions from the style profile\n"
+        f"- 返信は簡潔に（長文は避ける）/ Keep it brief (avoid long replies)\n"
+        f"- 挨拶文・前置きは省略可 / Greetings and preamble can be omitted\n\n"
+        f"必ず以下の JSON 形式のみで回答してください（説明文不要）:\n"
+        f"/ Respond ONLY in the following JSON format (no explanation):\n"
+        f'{{ "reply_text": "返信文", "confidence": 0.0から1.0の数値 }}'
+    )
+
+    try:
+        text   = _call_model(client_data, prompt)
+        result = _parse_json_response(text)
+
+        # フィールドの型を正規化 / Normalize field types
+        reply_text = str(result.get("reply_text", "")).strip()
+        confidence = float(result.get("confidence", 0.5))
+        confidence = max(0.0, min(1.0, confidence))  # 0–1 にクランプ / Clamp to 0–1
+
+        client_data.setdefault("api_call_log", []).append(
+            {"endpoint": "generate_discord_reply", "ts": datetime.now().isoformat()}
+        )
+        logger.info(
+            f"Discord 返信案生成完了: channel={channel_name}, "
+            f"confidence={confidence:.2f}, length={len(reply_text)}"
+        )
+        return {"reply_text": reply_text, "confidence": confidence}
+
+    except ResourceExhausted:
+        # API レート制限 / API rate limit hit
+        logger.warning("Gemini API レート制限: Discord 返信案生成をスキップ / Rate limit hit, skipping Discord reply generation")
+        return {"reply_text": "__RETRY__", "confidence": 0.0}
+    except Exception as e:
+        logger.error(f"Discord 返信案生成エラー / Discord reply generation error: {e}")
+        return {"reply_text": "", "confidence": 0.0}
+
+
 def refine_reply_draft(client_data: dict, previous_draft: str, user_instruction: str) -> str:
     """
     ユーザーの修正指示をもとに、既存の返信案を再生成する。

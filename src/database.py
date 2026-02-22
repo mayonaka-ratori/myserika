@@ -97,6 +97,23 @@ class Database:
                     created_at          TEXT NOT NULL,
                     updated_at          TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS discord_messages (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id       TEXT UNIQUE NOT NULL,
+                    channel_id       TEXT,
+                    guild_id         TEXT,
+                    sender_id        TEXT,
+                    sender_name      TEXT,
+                    content          TEXT,
+                    is_mention       INTEGER DEFAULT 0,
+                    is_dm            INTEGER DEFAULT 0,
+                    replied          INTEGER DEFAULT 0,
+                    reply_content    TEXT,
+                    created_at       TEXT NOT NULL,
+                    replied_at       TEXT,
+                    reminder_sent_at TEXT
+                );
             """)
             await db.commit()
 
@@ -723,6 +740,97 @@ class Database:
                     "count": row["cnt"],
                 }
             return summary
+
+    # ── Expense CRUD ───────────────────────────────────────────────────────
+
+    # ── Discord message CRUD ────────────────────────────────────────────────
+
+    async def save_discord_message(
+        self,
+        message_id: str,
+        channel_id: str,
+        guild_id: str,
+        sender_id: str,
+        sender_name: str,
+        content: str,
+        is_mention: bool = False,
+        is_dm: bool = False,
+    ) -> int:
+        """Save a Discord message to the discord_messages table.
+        Uses INSERT OR IGNORE to skip duplicates.
+        Returns the row id (lastrowid), or 0 if already existed."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO discord_messages
+                    (message_id, channel_id, guild_id, sender_id, sender_name,
+                     content, is_mention, is_dm, replied, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    message_id, channel_id, guild_id, sender_id, sender_name,
+                    content, int(is_mention), int(is_dm), now,
+                ),
+            )
+            await db.commit()
+            return cursor.lastrowid or 0
+
+    async def get_unreplied_messages(self, older_than_hours: int = 2) -> list[dict]:
+        """Return Discord messages that have not been replied to and have no
+        pending reminder (reminder_sent_at IS NULL), older than older_than_hours."""
+        cutoff = (
+            datetime.now() - timedelta(hours=older_than_hours)
+        ).isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM discord_messages
+                WHERE replied = 0
+                  AND reminder_sent_at IS NULL
+                  AND created_at <= ?
+                ORDER BY created_at ASC
+                """,
+                (cutoff,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def mark_as_replied(self, discord_db_id: int, reply_content: str) -> None:
+        """Mark a discord_messages row as replied with the sent content."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                UPDATE discord_messages
+                SET replied=1, reply_content=?, replied_at=?
+                WHERE id=?
+                """,
+                (reply_content, now, discord_db_id),
+            )
+            await db.commit()
+
+    async def get_discord_message_by_id(self, discord_db_id: int) -> dict | None:
+        """Fetch a single discord_messages row by primary key. Returns None if not found."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM discord_messages WHERE id=?", (discord_db_id,)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_discord_reminder_sent(self, discord_db_id: int) -> None:
+        """Set reminder_sent_at to now for the given discord_messages row.
+        Prevents duplicate reminder notifications for the same message."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE discord_messages SET reminder_sent_at=? WHERE id=?",
+                (now, discord_db_id),
+            )
+            await db.commit()
 
     # ── Expense CRUD ───────────────────────────────────────────────────────
 
