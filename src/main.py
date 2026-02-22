@@ -456,7 +456,13 @@ async def check_and_process_emails(
                     eid = r.get("email_id", "")
                     if eid and r.get("category") != "__RETRY__":
                         notified_ids.add(eid)
-                await send_email_summary(bot, chat_id, new_classified)
+                # 要返信メールがある場合のみ通知（閲覧のみ・無視は通知しない）
+                actionable = [
+                    r for r in new_classified
+                    if r.get("category") in (CATEGORY_URGENT, CATEGORY_NORMAL)
+                ]
+                if actionable:
+                    await send_email_summary(bot, chat_id, actionable)
 
         logger.info(
             f"処理完了: {len(classified)} 件分類, 返信案 {new_drafts} 件生成, "
