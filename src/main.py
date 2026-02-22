@@ -391,9 +391,30 @@ async def check_and_process_emails(
             except Exception:
                 pass
 
-        # ステップ4: Telegram にサマリーを送信
+        # ステップ4: Telegram にサマリーを送信（重複通知を防ぐためデduplication）
         if not is_quiet:
-            await send_email_summary(bot, chat_id, classified)
+            # 通知済みIDを除外して重複通知を防ぐ / deduplicate notifications
+            notified_ids: set = telegram_app.bot_data.setdefault(
+                "notified_email_ids", set()
+            )
+            # 日付をまたいだらリセット / daily reset
+            today = datetime.now().date()
+            if telegram_app.bot_data.get("notified_email_ids_date") != today:
+                notified_ids.clear()
+                telegram_app.bot_data["notified_email_ids_date"] = today
+
+            new_classified = [
+                r for r in classified
+                if r.get("email_id", "") not in notified_ids
+            ]
+
+            if new_classified:
+                # 今回通知する ID を記録（__RETRY__ は除外して再通知を許可）
+                for r in new_classified:
+                    eid = r.get("email_id", "")
+                    if eid and r.get("category") != "__RETRY__":
+                        notified_ids.add(eid)
+                await send_email_summary(bot, chat_id, new_classified)
 
         logger.info(
             f"処理完了: {len(classified)} 件分類, 返信案 {new_drafts} 件生成, "
@@ -541,6 +562,8 @@ async def main_loop(config: dict) -> None:
         "quiet_until":   None,   # datetime | None: quiet モード解除時刻
         "quiet_since":   None,   # datetime | None: quiet 開始時刻
         "quiet_email_count": 0,  # quiet 中に届いたメール件数カウンタ
+        "notified_email_ids": set(),      # set[str]: 通知済み email_id
+        "notified_email_ids_date": None,  # date | None: セット最終リセット日
     })
     telegram_app.bot_data["calendar_service"] = calendar_service
     telegram_app.bot_data["calendar_client"] = calendar_client
