@@ -66,8 +66,49 @@ class Database:
                     updated_at   TEXT NOT NULL,
                     completed_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS moneyforward_transactions (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mf_id           TEXT UNIQUE NOT NULL,
+                    is_calculated   INTEGER DEFAULT 1,
+                    date            TEXT NOT NULL,
+                    content         TEXT,
+                    amount          INTEGER NOT NULL,
+                    institution     TEXT,
+                    category_large  TEXT,
+                    category_medium TEXT,
+                    memo            TEXT,
+                    is_transfer     INTEGER DEFAULT 0,
+                    match_status    TEXT DEFAULT 'pending',
+                    matched_expense_id INTEGER,
+                    created_at      TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date                TEXT NOT NULL,
+                    description         TEXT NOT NULL,
+                    amount              INTEGER NOT NULL,
+                    category            TEXT,
+                    receipt_image_path  TEXT,
+                    matched_mf_id       TEXT,
+                    match_confidence    TEXT,
+                    source              TEXT DEFAULT 'manual',
+                    created_at          TEXT NOT NULL,
+                    updated_at          TEXT NOT NULL
+                );
             """)
             await db.commit()
+
+            # reminded_at カラムを追加（既存 DB は ALTER TABLE でマイグレーション）
+            # Add reminded_at column (migrates existing DB via ALTER TABLE)
+            try:
+                await db.execute(
+                    "ALTER TABLE tasks ADD COLUMN reminded_at TEXT"
+                )
+                await db.commit()
+            except Exception:
+                pass  # カラムが既に存在する場合はスキップ / Skip if column already exists
 
         logger.info(f"DB 初期化完了: {self._db_path}")
 
@@ -517,3 +558,183 @@ class Database:
                 (title, now, task_id),
             )
             await db.commit()
+
+    async def get_upcoming_reminders(self, hours_before: int = 3) -> list[dict]:
+        """
+        hours_before 時間以内に期日が来るタスクで、まだ reminded_at が NULL のものを返す。
+        / Return tasks due within hours_before hours that have not been reminded yet.
+        条件 / Conditions:
+          - status が done/cancelled でない / status is not done/cancelled
+          - due_date が現在〜(現在+hours_before) の範囲内
+            / due_date is between now and (now + hours_before)
+          - reminded_at IS NULL
+        """
+        now = datetime.now()
+        deadline = (now + timedelta(hours=hours_before)).isoformat()
+        now_str = now.isoformat()
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status NOT IN ('done', 'cancelled')
+                  AND due_date IS NOT NULL
+                  AND due_date != ''
+                  AND due_date >= ?
+                  AND due_date <= ?
+                  AND (reminded_at IS NULL)
+                ORDER BY due_date ASC
+                """,
+                (now_str, deadline),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def mark_reminded(self, task_id: int) -> None:
+        """
+        指定タスクの reminded_at を現在時刻の ISO 文字列に更新する。
+        / Set reminded_at to current ISO timestamp for the given task.
+        """
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET reminded_at=? WHERE id=?",
+                (now, task_id),
+            )
+            await db.commit()
+
+    # ── MoneyForward 取引 CRUD ──────────────────────────────────────────────
+
+    async def save_mf_transaction(
+        self,
+        mf_id: str,
+        is_calculated: int,
+        date: str,
+        content: str,
+        amount: int,
+        institution: str,
+        category_large: str,
+        category_medium: str,
+        memo: str,
+        is_transfer: int,
+    ) -> bool:
+        """INSERT OR IGNORE で重複スキップ。新規挿入なら True を返す。
+        / Insert with duplicate check; returns True if newly inserted."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO moneyforward_transactions
+                    (mf_id, is_calculated, date, content, amount,
+                     institution, category_large, category_medium,
+                     memo, is_transfer, match_status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (mf_id, is_calculated, date, content, amount,
+                 institution, category_large, category_medium,
+                 memo, is_transfer, now),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_mf_transactions(
+        self,
+        month: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """月（YYYY-MM）・照合ステータスで絞り込んで返す。
+        / Filter by month and match_status."""
+        conditions: list[str] = []
+        params: list = []
+
+        if month:
+            conditions.append("date LIKE ?")
+            params.append(f"{month}%")
+        if status:
+            conditions.append("match_status = ?")
+            params.append(status)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"SELECT * FROM moneyforward_transactions {where} "
+                f"ORDER BY date DESC LIMIT ?",
+                params,
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def update_mf_match_status(
+        self,
+        mf_id: str,
+        status: str,
+        matched_expense_id: int | None = None,
+    ) -> None:
+        """照合ステータスと紐付け expense_id を更新する。
+        / Update match_status and linked expense id."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                UPDATE moneyforward_transactions
+                SET match_status=?, matched_expense_id=?
+                WHERE mf_id=?
+                """,
+                (status, matched_expense_id, mf_id),
+            )
+            await db.commit()
+
+    async def get_monthly_expense_summary(self, month: str) -> dict:
+        """指定月（YYYY-MM）の category_large 別集計を返す。
+        / Return category breakdown for the given month."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT category_large, SUM(amount) AS total, COUNT(*) AS cnt
+                FROM moneyforward_transactions
+                WHERE date LIKE ? AND is_transfer = 0 AND amount < 0
+                GROUP BY category_large
+                ORDER BY total ASC
+                """,
+                (f"{month}%",),
+            )
+            rows = await cursor.fetchall()
+            summary: dict = {}
+            for row in rows:
+                cat = row["category_large"] or "未分類"
+                summary[cat] = {
+                    "total": abs(row["total"]),
+                    "count": row["cnt"],
+                }
+            return summary
+
+    # ── Expense CRUD ───────────────────────────────────────────────────────
+
+    async def save_expense(
+        self,
+        date: str,
+        description: str,
+        amount: int,
+        category: str = "",
+        source: str = "manual",
+    ) -> int:
+        """経費を保存して lastrowid を返す。
+        / Save an expense and return its id."""
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO expenses
+                    (date, description, amount, category, source,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (date, description, amount, category, source, now, now),
+            )
+            await db.commit()
+            return cursor.lastrowid

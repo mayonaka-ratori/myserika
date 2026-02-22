@@ -17,13 +17,49 @@ from gemini_client import _call_model
 logger = logging.getLogger(__name__)
 
 
+def _format_remaining(due_str: str) -> str:
+    """
+    due_date 文字列から現在までの残り時間を人間が読みやすい形式で返す。
+    / Return human-readable remaining time string from due_date string.
+    例 / Examples: "2時間30分", "45分", "3日2時間"
+    パースできない場合は空文字列を返す。/ Returns "" if unparseable.
+    """
+    if not due_str:
+        return ""
+    try:
+        # ISO datetime または YYYY-MM-DD 形式を処理
+        # Handle ISO datetime or YYYY-MM-DD format
+        try:
+            due = datetime.fromisoformat(due_str)
+        except ValueError:
+            due = datetime.strptime(due_str[:10], "%Y-%m-%d").replace(
+                hour=23, minute=59, second=0
+            )
+
+        delta = due - datetime.now()
+        total_seconds = int(delta.total_seconds())
+
+        if total_seconds <= 0:
+            return "期限切れ"
+
+        days, remainder = divmod(total_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes = remainder // 60
+
+        if days > 0:
+            return f"{days}日{hours}時間" if hours else f"{days}日"
+        if hours > 0:
+            return f"{hours}時間{minutes}分" if minutes else f"{hours}時間"
+        return f"{minutes}分"
+    except (ValueError, TypeError):
+        return ""
+
+
 class TaskManager:
     def __init__(self, db, gemini_client, calendar_client=None):
         self._db = db
         self._gemini = gemini_client
         self._calendar = calendar_client
-        # リマインダー送信済みキー: {(task_id, hours_before), ...}
-        self._reminded: set = set()
 
     # ── 公開 API / Public API ───────────────────────────────────────────────
 
@@ -134,49 +170,74 @@ class TaskManager:
         """
         締切前リマインダーをチェックして Telegram に通知する。
         Check task reminders and send Telegram notifications.
-        reminder_hours_before リストに記載された N 時間前に通知する。
-        同一タスクで複数の hours_before に該当する場合は最初の 1 件のみ送信する。
+
+        DB の reminded_at カラムで重複通知を防ぐ（再起動後も安全）。
+        Uses DB reminded_at column to prevent duplicate notifications (restart-safe).
+        config の task.reminder_hours_before（デフォルト: 3）時間前にリマインドする。
+        Reminds task.reminder_hours_before hours before due (default: 3).
         """
-        reminder_hours = config.get("task", {}).get("reminder_hours_before", [24, 1])
-        now = datetime.now()
+        hours_before = config.get("task", {}).get("reminder_hours_before", 3)
+        # リスト形式で渡された場合は最小値を採用
+        # If passed as list, use the minimum value
+        if isinstance(hours_before, list):
+            hours_before = min(hours_before) if hours_before else 3
 
         try:
-            tasks = await self._db.get_tasks(limit=100)
+            tasks = await self._db.get_upcoming_reminders(hours_before=hours_before)
         except Exception as e:
             logger.warning(f"リマインダーチェック中にタスク取得失敗: {e}")
             return
 
         for task in tasks:
-            if task.get("status") in ("done", "cancelled"):
-                continue
-            due_str = task.get("due_date", "")
-            if not due_str:
-                continue
+            # remaining フィールドを計算して付与
+            # Calculate and attach remaining time as human-readable string
+            remaining = _format_remaining(task.get("due_date", ""))
+            task["remaining"] = remaining
 
+            await self._send_reminder(bot, chat_id, task, hours_before)
+
+            # DB に送信済みを記録して重複通知を防ぐ
+            # Mark as reminded in DB to prevent duplicate notifications
             try:
-                due = datetime.fromisoformat(due_str)
-            except ValueError:
-                # YYYY-MM-DD 形式は当日 23:59 として扱う
-                try:
-                    due = datetime.strptime(due_str[:10], "%Y-%m-%d").replace(
-                        hour=23, minute=59, second=0
-                    )
-                except ValueError:
-                    continue
+                await self._db.mark_reminded(task["id"])
+            except Exception as e:
+                logger.warning(f"mark_reminded エラー: {e}")
 
-            for hours in reminder_hours:
-                remind_at = due - timedelta(hours=hours)
-                diff_min = abs((now - remind_at).total_seconds() / 60)
-                if diff_min > 5:
-                    continue
+    async def get_today_top_tasks(self, n: int = 3) -> list[dict]:
+        """
+        今日のブリーフィング向けに、期日が近い/優先度が高いタスクを n 件返す。
+        / Return top n tasks for today's daily briefing, sorted by priority then due date.
+        DB の get_today_tasks()（期日が今日以前 or 優先度 urgent/high）をラップする。
+        / Wraps DB get_today_tasks() which returns tasks due today or earlier, or high priority.
+        """
+        try:
+            tasks = await self._db.get_today_tasks()
+        except Exception as e:
+            logger.warning(f"get_today_top_tasks エラー: {e}")
+            return []
+        return tasks[:n]
 
-                key = (task["id"], hours)
-                if key in self._reminded:
-                    break  # 既通知 → 後続の hours_before もスキップ
+    async def get_overdue_tasks(self) -> list[dict]:
+        """
+        期限切れタスクのリストを返す。各タスクに days_overdue フィールドを付与する。
+        / Return overdue tasks with days_overdue field added to each task dict.
+        """
+        try:
+            tasks = await self._db.get_overdue_tasks()
+        except Exception as e:
+            logger.warning(f"get_overdue_tasks エラー: {e}")
+            return []
 
-                await self._send_reminder(bot, chat_id, task, hours)
-                self._reminded.add(key)
-                break  # 同一タスクで複数ヒットしても最初の 1 件のみ
+        today = datetime.now().date()
+        for task in tasks:
+            due_str = task.get("due_date", "")
+            try:
+                due_date = datetime.fromisoformat(due_str[:10]).date()
+                task["days_overdue"] = (today - due_date).days
+            except (ValueError, TypeError):
+                task["days_overdue"] = 0
+
+        return tasks
 
     # ── 内部ヘルパー / Internal Helpers ────────────────────────────────────
 
@@ -229,18 +290,26 @@ class TaskManager:
     async def _send_reminder(
         self, bot, chat_id: str, task: dict, hours_before: int
     ) -> None:
-        """リマインダーメッセージを Telegram に送信する。"""
+        """
+        リマインダーメッセージを Telegram に送信する。
+        / Send a reminder message to Telegram.
+        task に remaining フィールドがあれば残り時間テキストとして使用する。
+        / Uses task['remaining'] field if present for human-readable time display.
+        """
         priority_icon = {
             "urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"
         }.get(task.get("priority", "medium"), "🟡")
 
         due_str = task.get("due_date", "")
         due_display = due_str[:10] if due_str else "期日不明"
-        hours_text = f"{hours_before}時間前"
+
+        # remaining フィールドがあれば使用、なければ hours_before から生成
+        # Use remaining field if available, otherwise generate from hours_before
+        remaining = task.get("remaining") or f"{hours_before}時間前"
 
         import html as _html
         text = (
-            f"⏰ <b>タスクリマインダー（期日 {hours_text}）</b>\n"
+            f"⏰ <b>タスクリマインダー</b>（あと {remaining}）\n"
             f"{priority_icon} {_html.escape(task['title'])}\n"
             f"期日: {due_display}"
         )

@@ -46,4 +46,5 @@ help - コマンド一覧 / Command list
 todo - タスク追加 / Add task
 tasks - タスク一覧 / Task list
 done - タスク完了 / Complete task
+expense - 経費管理 / Expense management
 ```

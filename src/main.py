@@ -41,6 +41,7 @@ from discord_client import DiscordMonitor
 import web_server
 from database import Database
 from task_manager import TaskManager
+from expense_manager import ExpenseManager
 
 # ログ設定（INFOレベル、タイムスタンプ付き）
 logging.basicConfig(
@@ -662,6 +663,8 @@ async def main_loop(config: dict) -> None:
         "task_manager": None,             # main_loop で上書き / overwritten in main_loop
         "last_task_list": [],             # /tasks の最終表示リスト / last /tasks display
         "awaiting_task_edit": None,       # 編集中タスクID / task id being edited
+        "awaiting_csv_upload": False,     # CSV アップロード待ち状態 / awaiting CSV upload
+        "expense_manager": None,          # main_loop で上書き / overwritten in main_loop
     })
     telegram_app.bot_data["calendar_service"] = calendar_service
     telegram_app.bot_data["calendar_client"] = calendar_client
@@ -678,6 +681,11 @@ async def main_loop(config: dict) -> None:
                                    calendar_client=calendar_client)
         logger.info("TaskManager 初期化完了 / TaskManager initialized")
     telegram_app.bot_data["task_manager"] = task_manager
+
+    # ExpenseManager 初期化 / Initialize ExpenseManager
+    expense_manager = ExpenseManager(db=db, gemini_client=gemini_client)
+    telegram_app.bot_data["expense_manager"] = expense_manager
+    logger.info("ExpenseManager 初期化完了 / ExpenseManager initialized")
 
     web_server.init(telegram_app.bot_data)
 

@@ -161,12 +161,17 @@ def build_application(bot_token: str) -> Application:
     app.add_handler(CommandHandler("quiet",    handle_quiet_command))
     app.add_handler(CommandHandler("resume",   handle_resume_command))
     app.add_handler(CommandHandler("contacts", handle_contacts_command))
-    app.add_handler(CommandHandler("todo",   handle_todo_command))
-    app.add_handler(CommandHandler("tasks",  handle_tasks_command))
-    app.add_handler(CommandHandler("done",   handle_done_command))
+    app.add_handler(CommandHandler("todo",    handle_todo_command))
+    app.add_handler(CommandHandler("tasks",   handle_tasks_command))
+    app.add_handler(CommandHandler("done",    handle_done_command))
+    app.add_handler(CommandHandler("expense", handle_expense_command))
 
     # インラインキーボードのコールバックハンドラー
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Document ハンドラー（テキストハンドラーより前に登録）
+    # Register before text handler to ensure proper priority
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     # テキストメッセージハンドラー（コマンド以外）
     app.add_handler(
@@ -214,7 +219,8 @@ async def handle_help_command(
         "/help — このヘルプを表示\n"
         "/todo — タスク追加（例: /todo 確定申告 3/15）\n"
         "/tasks — タスク一覧（/tasks urgent / today / overdue）\n"
-        "/done — タスク完了（例: /done 1）"
+        "/done — タスク完了（例: /done 1）\n"
+        "/expense — 経費管理メニュー / Expense management"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -1047,6 +1053,183 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception as e:
                 await query.answer(f"エラー: {e}")
 
+    # ── 経費管理コールバック / Expense Callbacks ───────────────────────────
+
+    elif data == "expense_receipt":
+        await query.edit_message_text(
+            "📸 レシートの写真を送信してください。\n（近日実装予定 / Coming soon）"
+        )
+
+    elif data == "expense_summary":
+        db = context.bot_data.get("db")
+        if not db:
+            await query.edit_message_text("⚠️ DB が利用できません。")
+            return
+        month = datetime.now().strftime("%Y-%m")
+        try:
+            summary = await db.get_monthly_expense_summary(month)
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ サマリー取得エラー：{html.escape(str(e))}", parse_mode="HTML")
+            return
+
+        if not summary:
+            await query.edit_message_text(f"📊 {month} のデータがありません。")
+            return
+
+        lines = [f"📊 <b>{month} 支出サマリー</b>", "─────────────"]
+        total = 0
+        for cat, vals in sorted(summary.items(), key=lambda x: x[1]["total"], reverse=True):
+            cat_esc = html.escape(cat)
+            amount = vals["total"]
+            cnt = vals["count"]
+            total += amount
+            lines.append(f"{cat_esc}：¥{amount:,}（{cnt}件）")
+        lines.append("─────────────")
+        lines.append(f"合計：¥{total:,}")
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML")
+
+    elif data == "expense_csv_start":
+        context.bot_data["awaiting_csv_upload"] = True
+        await query.edit_message_text(
+            "📥 MoneyForward ME の CSV ファイルを送信してください。\n"
+            "/ Please send your MoneyForward ME CSV file."
+        )
+
+    elif data == "expense_match_run":
+        expense_manager = context.bot_data.get("expense_manager")
+        db = context.bot_data.get("db")
+        if not expense_manager or not db:
+            await query.edit_message_text("⚠️ 経費マネージャーが初期化されていません。")
+            return
+
+        await query.edit_message_text("🔍 照合を実行中...")
+
+        try:
+            results = await expense_manager.match_with_moneyforward()
+        except Exception as e:
+            logger.error(f"照合エラー / Matching error: {e}")
+            await query.edit_message_text(f"⚠️ 照合エラー：{html.escape(str(e))}", parse_mode="HTML")
+            return
+
+        if not results:
+            # 経費テーブルが空 → 未確認の MF 取引を表示
+            pending_mf = await db.get_mf_transactions(status="pending", limit=5)
+            if not pending_mf:
+                await query.edit_message_text("✅ 未照合の取引はありません。")
+                return
+
+            chat_id = context.bot_data.get("chat_id", "")
+            await query.edit_message_text(
+                f"📋 未確認の取引が {len(pending_mf)} 件あります。確認してください。"
+            )
+            for mf in pending_mf:
+                mf_id = mf["mf_id"]
+                date_disp = mf.get("date", "")[:10]
+                content_disp = html.escape(mf.get("content", "（内容不明）"))
+                amount = mf.get("amount", 0)
+                cat = html.escape(mf.get("category_large", "未分類"))
+                text = (
+                    f"📝 <b>{date_disp}</b> {content_disp}\n"
+                    f"金額：¥{abs(amount):,} / カテゴリ：{cat}"
+                )
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ 確定", callback_data=f"ematch_y:0:{mf_id}"),
+                    InlineKeyboardButton("❌ 無視", callback_data=f"ematch_no:{mf_id}"),
+                ]])
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb
+                    )
+                except Exception as e:
+                    logger.warning(f"MF 取引通知エラー: {e}")
+        else:
+            chat_id = context.bot_data.get("chat_id", "")
+            await query.edit_message_text(f"🔍 照合候補が {len(results)} 件見つかりました。")
+            for item in results[:5]:
+                expense = item["expense"]
+                candidates = item["candidates"]
+                exp_desc = html.escape(expense.get("description", ""))
+                exp_date = expense.get("date", "")[:10]
+                exp_amount = expense.get("amount", 0)
+                lines = [
+                    f"💰 経費：<b>{exp_desc}</b>（{exp_date} / ¥{abs(exp_amount):,}）",
+                ]
+                for cand in candidates[:3]:
+                    mf = cand["mf"]
+                    conf = cand["confidence"]
+                    mf_id = mf["mf_id"]
+                    mf_content = html.escape(mf.get("content", ""))
+                    mf_date = mf.get("date", "")[:10]
+                    lines.append(f"  [{conf}] {mf_date} {mf_content}")
+                    kb = InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "✅ 照合確定",
+                            callback_data=f"ematch_y:{expense['id']}:{mf_id}"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ 無視",
+                            callback_data=f"ematch_no:{mf_id}"
+                        ),
+                    ]])
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="\n".join(lines),
+                        parse_mode="HTML",
+                        reply_markup=kb,
+                    )
+                except Exception as e:
+                    logger.warning(f"照合候補通知エラー: {e}")
+
+    elif data.startswith("ematch_y:"):
+        # "ematch_y:{expense_id}:{mft_id}"
+        parts = data.split(":", 2)
+        if len(parts) < 3:
+            await query.answer("データ形式エラー")
+            return
+        exp_id_str, mft_id = parts[1], parts[2]
+        db = context.bot_data.get("db")
+        if db:
+            exp_id = int(exp_id_str) if exp_id_str.isdigit() else 0
+            await db.update_mf_match_status(mft_id, "matched", exp_id if exp_id else None)
+        await query.edit_message_text("✅ 照合を確定しました。/ Match confirmed.")
+
+    elif data.startswith("ematch_no:"):
+        # "ematch_no:{mft_id}"
+        mft_id = data.split(":", 1)[1]
+        db = context.bot_data.get("db")
+        if db:
+            await db.update_mf_match_status(mft_id, "ignored")
+        await query.edit_message_text("❌ 現金払い（照合なし）として登録しました。/ Marked as cash (no match).")
+
+    elif data == "expense_annual":
+        db = context.bot_data.get("db")
+        if not db:
+            await query.edit_message_text("⚠️ DB が利用できません。")
+            return
+        year = datetime.now().strftime("%Y")
+        lines = [f"📋 <b>{year}年 月別支出レポート</b>", "─────────────"]
+        year_total = 0
+        for m in range(1, 13):
+            month_str = f"{year}-{m:02d}"
+            try:
+                summary = await db.get_monthly_expense_summary(month_str)
+                month_total = sum(v["total"] for v in summary.values())
+            except Exception:
+                month_total = 0
+            if month_total > 0:
+                lines.append(f"{m}月：¥{month_total:,}")
+                year_total += month_total
+        if year_total == 0:
+            lines.append("データがありません。")
+        else:
+            lines.append("─────────────")
+            lines.append(f"年間合計：¥{year_total:,}")
+        await query.edit_message_text("\n".join(lines), parse_mode="HTML")
+
+    elif data == "expense_later":
+        await query.edit_message_text("了解です。/expense でいつでも確認できます。")
+
     else:
         logger.warning(f"未知のコールバックデータ: {data}")
 
@@ -1078,6 +1261,13 @@ async def handle_text_message(
                 await update.message.reply_text(f"⚠️ 更新エラー：{e}")
         else:
             await update.message.reply_text("⚠️ タイトルが空のためキャンセルしました。")
+        return
+
+    # CSV アップロード待ち中のテキスト案内 / Guide text while waiting for CSV upload
+    if bot_data.get("awaiting_csv_upload"):
+        await update.message.reply_text(
+            "📎 テキストではなく CSV ファイルを添付してください。/ Please attach a CSV file, not text."
+        )
         return
 
     # Discord 返信待ち状態の確認（awaiting_revision より先にチェック）
@@ -1471,6 +1661,73 @@ async def handle_done_command(
     # リストから除去して番号ズレを防ぐ / Remove from list to keep numbers consistent
     context.bot_data["last_task_list"] = [t for t in task_list if t["id"] != task["id"]]
     logger.info(f"タスク完了 / Task done: id={task['id']} title={task['title']!r}")
+
+
+async def handle_expense_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    /expense で経費管理メニューを表示する。
+    / Show expense management menu.
+    """
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 レシート撮影", callback_data="expense_receipt")],
+        [InlineKeyboardButton("📊 今月のサマリー", callback_data="expense_summary")],
+        [InlineKeyboardButton("📥 MoneyForward CSV 読込", callback_data="expense_csv_start")],
+        [InlineKeyboardButton("🔍 未照合の経費を確認", callback_data="expense_match_run")],
+        [InlineKeyboardButton("📋 年間レポート", callback_data="expense_annual")],
+    ])
+    await update.message.reply_text("💰 <b>経費管理</b>", parse_mode="HTML", reply_markup=keyboard)
+
+
+async def handle_document(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    CSV ファイル受信ハンドラー。awaiting_csv_upload=True の場合のみ処理する。
+    / Handle received documents. Only processes when awaiting_csv_upload is True.
+    """
+    if not context.bot_data.get("awaiting_csv_upload"):
+        return  # CSV 待ち状態でなければ無視 / Ignore if not waiting for CSV
+
+    doc = update.message.document
+    if not doc.file_name.lower().endswith(".csv"):
+        await update.message.reply_text(
+            "⚠️ CSV ファイルを送信してください。/ Please send a CSV file."
+        )
+        return
+
+    context.bot_data["awaiting_csv_upload"] = False
+    await update.message.reply_text("⏳ 読み込み中... / Importing...")
+
+    import tempfile
+    tg_file = await context.bot.get_file(doc.file_id)
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        await tg_file.download_to_drive(tmp.name)
+        tmp_path = tmp.name
+
+    expense_manager = context.bot_data.get("expense_manager")
+    try:
+        count = await expense_manager.import_moneyforward_csv(tmp_path)
+    except Exception as e:
+        logger.error(f"CSV インポートエラー / CSV import error: {e}")
+        await update.message.reply_text(
+            f"⚠️ インポートに失敗しました：{html.escape(str(e))}", parse_mode="HTML"
+        )
+        return
+    finally:
+        import os as _os
+        _os.unlink(tmp_path)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ 照合を実行", callback_data="expense_match_run"),
+        InlineKeyboardButton("後で", callback_data="expense_later"),
+    ]])
+    await update.message.reply_text(
+        f"✅ <b>{count}件インポートしました。</b>\n照合を実行しますか？",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
 
 
 def _log_classification_correction(email: dict, memory_path: str) -> None:

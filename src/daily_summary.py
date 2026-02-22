@@ -281,28 +281,45 @@ async def send_daily_briefing(
                 lines.extend(related)
                 lines.append("")
 
-    # ── ✅ タスク状況 / Task Status ──────────────────────────────
+    # ── 📋 Today's Top Tasks ──────────────────────────────────────
     if task_manager is not None and config is not None:
         task_cfg = config.get("task", {})
         if task_cfg.get("enabled", False):
             try:
                 top_n = task_cfg.get("daily_top_n", 3)
-                top = await task_manager.get_top_tasks(n=top_n)
+                # 新メソッド: 期日が近い/優先度が高いタスクを取得
+                # New method: get tasks due today or high priority
+                top = await task_manager.get_today_top_tasks(n=top_n)
+                # 新メソッド: 期限切れタスクを days_overdue 付きで取得
+                # New method: get overdue tasks with days_overdue field
+                overdue = await task_manager.get_overdue_tasks()
                 stats = await task_manager._db.get_task_stats()
-                overdue = await task_manager._db.get_overdue_tasks()
 
                 lines.append(
-                    f"✅ <b>タスク（未着手 {stats['todo']}件・進行中 {stats['in_progress']}件）</b>"
+                    f"📋 <b>タスク Top {top_n}"
+                    f"（未着手 {stats['todo']}件・進行中 {stats['in_progress']}件）</b>"
                 )
+
+                if top:
+                    for t in top:
+                        icon = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(
+                            t.get("priority", "medium"), "🟡"
+                        )
+                        due = f"（{t['due_date'][:10]}まで）" if t.get("due_date") else ""
+                        prog = "🔄 " if t.get("status") == "in_progress" else ""
+                        lines.append(f"・{icon}{prog}{html.escape(t['title'])}{due}")
+                else:
+                    lines.append("・本日のタスクなし")
+
+                # ⚠️ 期限切れタスクセクション / Overdue tasks section
                 if overdue:
-                    lines.append(f"⚠️ 期限切れ: {len(overdue)}件")
-                for t in top:
-                    icon = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(
-                        t.get("priority", "medium"), "🟡"
-                    )
-                    due = f"（{t['due_date'][:10]}まで）" if t.get("due_date") else ""
-                    prog = "🔄 " if t.get("status") == "in_progress" else ""
-                    lines.append(f"・{icon}{prog}{html.escape(t['title'])}{due}")
+                    lines.append("")
+                    lines.append(f"⚠️ <b>期限切れタスク（{len(overdue)}件）</b>")
+                    for t in overdue[:5]:
+                        days = t.get("days_overdue", 0)
+                        overdue_label = f"（{days}日超過）" if days > 0 else ""
+                        lines.append(f"・{html.escape(t['title'])}{overdue_label}")
+
                 lines.append("")
             except Exception as e:
                 logger.warning(f"タスクセクションエラー（スキップ）/ Task section error: {e}")
