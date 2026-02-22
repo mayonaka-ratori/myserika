@@ -211,6 +211,7 @@ async def send_daily_briefing(
     discord_client=None,
     calendar_client=None,
     config: dict | None = None,
+    task_manager=None,
 ) -> None:
     """
     毎朝のブリーフィングメッセージを Telegram に送信する。
@@ -279,6 +280,32 @@ async def send_daily_briefing(
             if related:
                 lines.extend(related)
                 lines.append("")
+
+    # ── ✅ タスク状況 / Task Status ──────────────────────────────
+    if task_manager is not None and config is not None:
+        task_cfg = config.get("task", {})
+        if task_cfg.get("enabled", False):
+            try:
+                top_n = task_cfg.get("daily_top_n", 3)
+                top = await task_manager.get_top_tasks(n=top_n)
+                stats = await task_manager._db.get_task_stats()
+                overdue = await task_manager._db.get_overdue_tasks()
+
+                lines.append(
+                    f"✅ <b>タスク（未着手 {stats['todo']}件・進行中 {stats['in_progress']}件）</b>"
+                )
+                if overdue:
+                    lines.append(f"⚠️ 期限切れ: {len(overdue)}件")
+                for t in top:
+                    icon = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(
+                        t.get("priority", "medium"), "🟡"
+                    )
+                    due = f"（{t['due_date'][:10]}まで）" if t.get("due_date") else ""
+                    prog = "🔄 " if t.get("status") == "in_progress" else ""
+                    lines.append(f"・{icon}{prog}{html.escape(t['title'])}{due}")
+                lines.append("")
+            except Exception as e:
+                logger.warning(f"タスクセクションエラー（スキップ）/ Task section error: {e}")
 
     # ── 📝 今日のTODO ──────────────────────────────
     lines.append("📝 <b>今日のTODO</b>")

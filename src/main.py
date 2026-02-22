@@ -39,6 +39,7 @@ from calendar_client import CalendarClient
 from discord_client import DiscordMonitor
 import web_server
 from database import Database
+from task_manager import TaskManager
 
 # ログ設定（INFOレベル、タイムスタンプ付き）
 logging.basicConfig(
@@ -156,6 +157,7 @@ def _is_learning_done(kind: str, memory_path: Path) -> bool:
 async def check_and_process_emails(
     gmail_service, gemini_client, telegram_app, config: dict,
     calendar_client=None,
+    task_manager=None,
 ) -> None:
     """
     メールチェック〜分類〜返信案生成〜Telegram 通知までの一連の処理を実行する。
@@ -269,6 +271,26 @@ async def check_and_process_emails(
                         language=lang,
                     )
 
+                # タスク自動抽出 / auto-extract tasks if enabled
+                task_cfg = config.get("task", {})
+                if task_manager and task_cfg.get("enabled") and task_cfg.get("auto_extract"):
+                    try:
+                        extracted = await task_manager.extract_tasks_from_email(
+                            sender=email.get("sender", ""),
+                            subject=email.get("subject", ""),
+                            body=email.get("body", "") or email.get("snippet", ""),
+                            category=category,
+                        )
+                        if extracted:
+                            logger.info(
+                                f"タスク抽出完了 / Tasks extracted: "
+                                f"{len(extracted)}件 from {email.get('subject', '')!r}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"タスク抽出エラー（スキップ）/ Task extraction error (skip): {e}"
+                        )
+
             if new_retry:
                 telegram_app.bot_data["retry_queue"] = new_retry
                 logger.info(f"retry_queue に {len(new_retry)} 件を残しました（次回再試行）")
@@ -363,6 +385,26 @@ async def check_and_process_emails(
                     reply_draft=draft,
                     language=lang,
                 )
+
+            # タスク自動抽出 / auto-extract tasks if enabled
+            task_cfg = config.get("task", {})
+            if task_manager and task_cfg.get("enabled") and task_cfg.get("auto_extract"):
+                try:
+                    extracted = await task_manager.extract_tasks_from_email(
+                        sender=email.get("sender", ""),
+                        subject=email.get("subject", ""),
+                        body=email.get("body", "") or email.get("snippet", ""),
+                        category=category,
+                    )
+                    if extracted:
+                        logger.info(
+                            f"タスク抽出完了 / Tasks extracted: "
+                            f"{len(extracted)}件 from {email.get('subject', '')!r}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"タスク抽出エラー（スキップ）/ Task extraction error (skip): {e}"
+                    )
 
         # quiet モードチェック / check if manual quiet mode is active
         quiet_until = telegram_app.bot_data.get("quiet_until")
@@ -482,10 +524,30 @@ async def daily_briefing_scheduler(
                     discord_client=discord_client,
                     calendar_client=telegram_app.bot_data.get("calendar_client"),
                     config=config,
+                    task_manager=telegram_app.bot_data.get("task_manager"),
                 )
                 last_sent_date = today
             except Exception as e:
                 logger.error(f"日次ブリーフィングスケジューラーエラー: {e}")
+
+
+async def task_reminder_scheduler(telegram_app, config: dict) -> None:
+    """
+    1分ごとにタスクリマインダーをチェックして Telegram 通知を送信するスケジューラー。
+    Check task reminders every minute and send Telegram notifications.
+    """
+    if not config.get("task", {}).get("enabled", False):
+        return
+    while True:
+        await asyncio.sleep(60)
+        task_manager = telegram_app.bot_data.get("task_manager")
+        if task_manager:
+            try:
+                await task_manager.check_reminders(
+                    telegram_app.bot, config["telegram"]["chat_id"], config
+                )
+            except Exception as e:
+                logger.error(f"タスクリマインダーエラー / Task reminder error: {e}")
 
 
 async def main_loop(config: dict) -> None:
@@ -564,6 +626,7 @@ async def main_loop(config: dict) -> None:
         "quiet_email_count": 0,  # quiet 中に届いたメール件数カウンタ
         "notified_email_ids": set(),      # set[str]: 通知済み email_id
         "notified_email_ids_date": None,  # date | None: セット最終リセット日
+        "task_manager": None,             # main_loop で上書き / overwritten in main_loop
     })
     telegram_app.bot_data["calendar_service"] = calendar_service
     telegram_app.bot_data["calendar_client"] = calendar_client
@@ -572,6 +635,14 @@ async def main_loop(config: dict) -> None:
     db = Database(str(project_root / "data" / "secretary.db"))
     await db.init_db()
     telegram_app.bot_data["db"] = db
+
+    # TaskManager 初期化 / Initialize TaskManager
+    task_manager = None
+    if config.get("task", {}).get("enabled", False):
+        task_manager = TaskManager(db=db, gemini_client=gemini_client,
+                                   calendar_client=calendar_client)
+        logger.info("TaskManager 初期化完了 / TaskManager initialized")
+    telegram_app.bot_data["task_manager"] = task_manager
 
     web_server.init(telegram_app.bot_data)
 
@@ -623,6 +694,8 @@ async def main_loop(config: dict) -> None:
             gmail_service, calendar_service, gemini_client, telegram_app, config
         )
     )
+    # タスクリマインダースケジューラーをバックグラウンドタスクとして起動
+    asyncio.create_task(task_reminder_scheduler(telegram_app, config))
     # Web サーバー起動（config の web.enabled が false なら起動しない）
     if config.get("web", {}).get("enabled", True):
         web_host = config.get("web", {}).get("host", "0.0.0.0")
@@ -659,6 +732,7 @@ async def main_loop(config: dict) -> None:
             await check_and_process_emails(
                 gmail_service, gemini_client, telegram_app, config,
                 calendar_client=calendar_client,
+                task_manager=task_manager,
             )
             logger.info(
                 f"{config['gmail']['check_interval_minutes']} 分後に次のチェックを実行します。"
