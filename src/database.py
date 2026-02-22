@@ -134,37 +134,43 @@ class Database:
             try:
                 await db.execute("SELECT store_name FROM expenses LIMIT 0")
             except Exception:
-                await db.executescript("""
-                    ALTER TABLE expenses RENAME TO expenses_old;
-                    CREATE TABLE expenses (
-                        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-                        date                 TEXT NOT NULL,
-                        store_name           TEXT NOT NULL,
-                        amount               INTEGER NOT NULL,
-                        tax_amount           INTEGER,
-                        category             TEXT,
-                        subcategory          TEXT,
-                        payment_method       TEXT DEFAULT 'cash',
-                        receipt_image_path   TEXT,
-                        moneyforward_matched INTEGER DEFAULT 0,
-                        moneyforward_id      TEXT,
-                        note                 TEXT,
-                        source               TEXT DEFAULT 'manual',
-                        created_at           TEXT NOT NULL,
-                        updated_at           TEXT NOT NULL
-                    );
-                    INSERT INTO expenses
-                        (id, date, store_name, amount, category,
-                         receipt_image_path, source, created_at, updated_at)
-                    SELECT id, date,
-                           COALESCE(description, ''),
-                           amount, category,
-                           receipt_image_path, source, created_at, updated_at
-                    FROM expenses_old;
-                    DROP TABLE expenses_old;
-                """)
-                await db.commit()
-                logger.info("expenses table migrated to new schema")
+                try:
+                    await db.executescript("""
+                        ALTER TABLE expenses RENAME TO expenses_old;
+                        CREATE TABLE expenses (
+                            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                            date                 TEXT NOT NULL,
+                            store_name           TEXT NOT NULL,
+                            amount               INTEGER NOT NULL,
+                            tax_amount           INTEGER,
+                            category             TEXT,
+                            subcategory          TEXT,
+                            payment_method       TEXT DEFAULT 'cash',
+                            receipt_image_path   TEXT,
+                            moneyforward_matched INTEGER DEFAULT 0,
+                            moneyforward_id      TEXT,
+                            note                 TEXT,
+                            source               TEXT DEFAULT 'manual',
+                            created_at           TEXT NOT NULL,
+                            updated_at           TEXT NOT NULL
+                        );
+                        INSERT INTO expenses
+                            (id, date, store_name, amount, category,
+                             receipt_image_path, source, created_at, updated_at)
+                        SELECT id, date,
+                               COALESCE(description, ''),
+                               amount, category,
+                               receipt_image_path, source, created_at, updated_at
+                        FROM expenses_old;
+                        DROP TABLE expenses_old;
+                    """)
+                    await db.commit()
+                    logger.info("expenses table migrated to new schema")
+                except Exception as mig_err:
+                    logger.error(
+                        f"expenses migration FAILED — DB may be inconsistent: {mig_err}"
+                    )
+                    raise
 
             # Migrate moneyforward_transactions: old schema used different column names
             try:
@@ -172,38 +178,44 @@ class Database:
                     "SELECT is_calculation_target FROM moneyforward_transactions LIMIT 0"
                 )
             except Exception:
-                await db.executescript("""
-                    ALTER TABLE moneyforward_transactions RENAME TO mf_transactions_old;
-                    CREATE TABLE moneyforward_transactions (
-                        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-                        mf_id                 TEXT UNIQUE NOT NULL,
-                        is_calculation_target INTEGER DEFAULT 1,
-                        date                  TEXT NOT NULL,
-                        content               TEXT,
-                        amount                INTEGER NOT NULL,
-                        source_account        TEXT,
-                        large_category        TEXT,
-                        medium_category       TEXT,
-                        memo                  TEXT,
-                        is_transfer           INTEGER DEFAULT 0,
-                        matched_expense_id    INTEGER,
-                        imported_at           TEXT NOT NULL
-                    );
-                    INSERT INTO moneyforward_transactions
-                        (id, mf_id, is_calculation_target, date, content, amount,
-                         source_account, large_category, medium_category,
-                         memo, is_transfer, matched_expense_id, imported_at)
-                    SELECT id, mf_id,
-                           COALESCE(is_calculated, 1),
-                           date, content, amount,
-                           institution, category_large, category_medium,
-                           memo, is_transfer, matched_expense_id,
-                           COALESCE(created_at, datetime('now'))
-                    FROM mf_transactions_old;
-                    DROP TABLE mf_transactions_old;
-                """)
-                await db.commit()
-                logger.info("moneyforward_transactions table migrated to new schema")
+                try:
+                    await db.executescript("""
+                        ALTER TABLE moneyforward_transactions RENAME TO mf_transactions_old;
+                        CREATE TABLE moneyforward_transactions (
+                            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                            mf_id                 TEXT UNIQUE NOT NULL,
+                            is_calculation_target INTEGER DEFAULT 1,
+                            date                  TEXT NOT NULL,
+                            content               TEXT,
+                            amount                INTEGER NOT NULL,
+                            source_account        TEXT,
+                            large_category        TEXT,
+                            medium_category       TEXT,
+                            memo                  TEXT,
+                            is_transfer           INTEGER DEFAULT 0,
+                            matched_expense_id    INTEGER,
+                            imported_at           TEXT NOT NULL
+                        );
+                        INSERT INTO moneyforward_transactions
+                            (id, mf_id, is_calculation_target, date, content, amount,
+                             source_account, large_category, medium_category,
+                             memo, is_transfer, matched_expense_id, imported_at)
+                        SELECT id, mf_id,
+                               COALESCE(is_calculated, 1),
+                               date, content, amount,
+                               institution, category_large, category_medium,
+                               memo, is_transfer, matched_expense_id,
+                               COALESCE(created_at, datetime('now'))
+                        FROM mf_transactions_old;
+                        DROP TABLE mf_transactions_old;
+                    """)
+                    await db.commit()
+                    logger.info("moneyforward_transactions table migrated to new schema")
+                except Exception as mig_err:
+                    logger.error(
+                        f"moneyforward_transactions migration FAILED — DB may be inconsistent: {mig_err}"
+                    )
+                    raise
 
         logger.info(f"DB 初期化完了: {self._db_path}")
 
@@ -964,10 +976,11 @@ class Database:
         self,
         month: str | None = None,
         category: str | None = None,
+        store_name: str | None = None,
         unmatched_only: bool = False,
         limit: int = 50,
     ) -> list[dict]:
-        """Return expenses filtered by month (YYYY-MM), category, and match status."""
+        """Return expenses filtered by month (YYYY-MM), category, store_name, and match status."""
         conditions: list[str] = []
         params: list = []
 
@@ -977,6 +990,9 @@ class Database:
         if category:
             conditions.append("category = ?")
             params.append(category)
+        if store_name:
+            conditions.append("LOWER(store_name) = LOWER(?)")
+            params.append(store_name)
         if unmatched_only:
             conditions.append("moneyforward_matched = 0")
 

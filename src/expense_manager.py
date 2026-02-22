@@ -4,8 +4,8 @@ MoneyForward ME CSV インポート・経費照合モジュール。
 ExpenseManager クラスで CSV の取り込みと expenses テーブルとの照合を担当する。
 """
 
+import asyncio
 import csv
-import io
 import json
 import logging
 import re
@@ -323,13 +323,12 @@ class ExpenseManager:
             return _FALLBACK
 
         try:
-            img = Image.open(image_path)
-            # Resize so the longest side is at most 1024 px
-            if max(img.width, img.height) > 1024:
-                img.thumbnail((1024, 1024), Image.LANCZOS)
-            # Convert to RGB (handles RGBA PNGs, palette images, etc.)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
+            with Image.open(image_path) as _raw:
+                # Resize so the longest side is at most 1024 px
+                if max(_raw.width, _raw.height) > 1024:
+                    _raw.thumbnail((1024, 1024), Image.LANCZOS)
+                # Convert to RGB (handles RGBA PNGs, palette images, etc.)
+                img = _raw.convert("RGB") if _raw.mode != "RGB" else _raw.copy()
         except Exception as e:
             logger.error(f"Failed to open/resize receipt image {image_path}: {e}")
             return _FALLBACK
@@ -349,8 +348,8 @@ class ExpenseManager:
         )
 
         try:
-            response = client.models.generate_content(
-                model=model, contents=[img, ocr_prompt]
+            response = await asyncio.to_thread(
+                client.models.generate_content, model=model, contents=[img, ocr_prompt]
             )
             raw_text = response.text or ""
         except Exception as e:
@@ -390,8 +389,14 @@ class ExpenseManager:
             except (ValueError, TypeError):
                 return None
 
+        date_raw = parsed.get("date")
+        date_ok = (
+            date_raw if isinstance(date_raw, str) and re.match(r"\d{4}-\d{2}-\d{2}$", date_raw)
+            else None
+        )
+
         return {
-            "date":           parsed.get("date") or None,
+            "date":           date_ok,
             "store_name":     str(parsed.get("store_name") or "不明"),
             "items":          items,
             "subtotal":       _to_int_or_none(parsed.get("subtotal")),
@@ -418,17 +423,15 @@ class ExpenseManager:
 
         # Stage 2: DB history — same store_name used before
         try:
-            past = await self._db.get_expenses(limit=200)
-            store_norm = store_name.strip().lower()
-            for exp in past:
-                if exp.get("store_name", "").strip().lower() == store_norm:
-                    cat = exp.get("category") or ""
-                    if cat:
-                        sub = exp.get("subcategory") or None
-                        logger.debug(
-                            f"auto_categorize: DB history match for '{store_name}' → {cat}"
-                        )
-                        return (cat, sub)
+            past = await self._db.get_expenses(store_name=store_name.strip(), limit=1)
+            if past:
+                cat = past[0].get("category") or ""
+                if cat:
+                    sub = past[0].get("subcategory") or None
+                    logger.debug(
+                        f"auto_categorize: DB history match for '{store_name}' → {cat}"
+                    )
+                    return (cat, sub)
         except Exception as e:
             logger.warning(f"auto_categorize: DB history lookup failed: {e}")
 
@@ -449,7 +452,9 @@ class ExpenseManager:
         )
 
         try:
-            response = client.models.generate_content(model=model, contents=prompt)
+            response = await asyncio.to_thread(
+                client.models.generate_content, model=model, contents=prompt
+            )
             raw = response.text or ""
             cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
             m = re.search(r"\{.*\}", cleaned, re.DOTALL)

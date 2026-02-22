@@ -19,6 +19,8 @@ from pathlib import Path
 import discord
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton
 
+from gemini_client import _call_model, _parse_json_response, generate_discord_reply
+
 logger = logging.getLogger(__name__)
 
 # MEMORY.md のパス（プロジェクトルート）/ Path to MEMORY.md (project root)
@@ -94,7 +96,11 @@ class DiscordMonitor(discord.Client):
         # 文体学習を非同期タスクとしてバックグラウンド起動（on_ready をブロックしない）
         # Launch style learning as a background task (does not block on_ready)
         if self.config.get("style_learning", False):
-            asyncio.create_task(self.initialize_style_learning())
+            _task = asyncio.create_task(self.initialize_style_learning())
+            _task.add_done_callback(
+                lambda t: logger.error(f"Style learning failed: {t.exception()}")
+                if not t.cancelled() and t.exception() else None
+            )
 
     async def on_message(self, message: discord.Message) -> None:
         """
@@ -306,8 +312,7 @@ class DiscordMonitor(discord.Client):
             )
 
             # ── Gemini で分析 / Analyze with Gemini ──
-            from gemini_client import _call_model, _parse_json_response
-            loop   = asyncio.get_event_loop()
+            loop   = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, _call_model, self.gemini_client, prompt)
             parsed = _parse_json_response(result)
 
@@ -488,10 +493,9 @@ class DiscordMonitor(discord.Client):
                         f"{priority_icon} {html.escape(task['title'])}\n"
                         f"{html.escape(source_label)}"
                     )
-                    from telegram import InlineKeyboardMarkup as TGKeyboard, InlineKeyboardButton as TGButton
-                    task_keyboard = TGKeyboard([[
-                        TGButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
-                        TGButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
+                    task_keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
+                        InlineKeyboardButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
                     ]])
                     await self.telegram_bot.send_message(
                         chat_id=self.chat_id, text=task_text,
@@ -523,8 +527,7 @@ class DiscordMonitor(discord.Client):
                 discord_style = self._read_discord_style_from_memory()
 
                 # Gemini は同期関数のため run_in_executor で非同期化 / Run sync Gemini call in executor
-                from gemini_client import generate_discord_reply
-                loop   = asyncio.get_event_loop()
+                loop   = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     None,
                     generate_discord_reply,
@@ -664,10 +667,9 @@ class DiscordMonitor(discord.Client):
                         f"{priority_icon} {html.escape(task['title'])}\n"
                         f"{html.escape(source_label)}"
                     )
-                    from telegram import InlineKeyboardMarkup as TGKeyboard, InlineKeyboardButton as TGButton
-                    task_keyboard = TGKeyboard([[
-                        TGButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
-                        TGButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
+                    task_keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ 追加する", callback_data=f"task_confirm:{task['id']}"),
+                        InlineKeyboardButton("❌ 無視する", callback_data=f"task_ignore:{task['id']}"),
                     ]])
                     await self.telegram_bot.send_message(
                         chat_id=self.chat_id, text=task_text,
@@ -699,8 +701,7 @@ class DiscordMonitor(discord.Client):
                 discord_style = self._read_discord_style_from_memory()
 
                 # Gemini は同期関数のため run_in_executor で非同期化 / Run sync Gemini call in executor
-                from gemini_client import generate_discord_reply
-                loop   = asyncio.get_event_loop()
+                loop   = asyncio.get_running_loop()
                 result = await loop.run_in_executor(
                     None,
                     generate_discord_reply,
@@ -851,8 +852,7 @@ class DiscordMonitor(discord.Client):
         )
 
         try:
-            from gemini_client import _call_model
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             summary = await loop.run_in_executor(
                 None, _call_model, self.gemini_client, prompt
             )

@@ -1448,7 +1448,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "rcpt_save":
         chat_id = str(update.effective_chat.id)
         db = context.bot_data.get("db")
-        pending = context.bot_data.get("pending_receipts", {}).pop(chat_id, None)
+        pending = context.bot_data.get("pending_receipts", {}).get(chat_id)
         if not pending or not db:
             await query.edit_message_text("⚠️ 保存するレシートが見つかりません。")
             return
@@ -1465,6 +1465,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 receipt_image_path=pending["image_path"],
                 source="receipt_photo",
             )
+            context.bot_data.get("pending_receipts", {}).pop(chat_id, None)
             await query.edit_message_text(
                 f"✅ <b>保存しました</b>\n"
                 f"店名: {html.escape(ocr.get('store_name','不明'))} / "
@@ -1508,6 +1509,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data.startswith("rcpt_cat:"):
         chat_id = str(update.effective_chat.id)
         new_category = data.split(":", 1)[1]
+        if new_category not in CATEGORY_KEYWORDS:
+            await query.edit_message_text("⚠️ 無効な勘定科目です。")
+            return
         pending = context.bot_data.get("pending_receipts", {}).get(chat_id)
         if not pending:
             await query.edit_message_text("⚠️ 対象のレシートが見つかりません。")
@@ -2069,13 +2073,23 @@ async def handle_receipt_photo(
         await update.message.reply_text("⚠️ 経費マネージャーが初期化されていません。")
         return
 
+    # Reject if a previous receipt is still pending (S4)
+    chat_id = str(update.effective_chat.id)
+    existing = context.bot_data.get("pending_receipts", {}).get(chat_id)
+    if existing:
+        await update.message.reply_text(
+            "⚠️ 前のレシートがまだ保留中です。先にそちらを保存または破棄してください。"
+        )
+        return
+
     # Send placeholder while processing
     placeholder = await update.message.reply_text("⏳ OCR 中... / Scanning receipt...")
 
-    # Save photo to data/receipts/
-    save_dir = Path("data/receipts")
+    # Save photo to data/receipts/ — path is relative to project root (W3), microsecond suffix prevents collisions (W6)
+    save_dir = Path(__file__).parent.parent / "data" / "receipts"
     save_dir.mkdir(parents=True, exist_ok=True)
-    filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".jpg"
+    now = datetime.now()
+    filename = now.strftime("%Y%m%d_%H%M%S") + f"_{now.microsecond:06d}.jpg"
     save_path = save_dir / filename
 
     try:
@@ -2104,7 +2118,6 @@ async def handle_receipt_photo(
         category, subcategory = "雑費", None
 
     # Store pending state keyed by chat_id
-    chat_id = str(update.effective_chat.id)
     context.bot_data.setdefault("pending_receipts", {})[chat_id] = {
         "image_path": str(save_path),
         "ocr": ocr,
