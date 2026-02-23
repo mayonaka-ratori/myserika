@@ -8,13 +8,14 @@ import html
 import logging
 import os
 import re
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import ContextTypes
 
 from gemini_client import get_api_usage
 from classifier import extract_email_address
+from utils import format_due_display as _format_due_display
 
 logger = logging.getLogger(__name__)
 
@@ -225,28 +226,6 @@ async def send_reply_draft(
         )
     except Exception as e:
         logger.error(f"Reply draft send error: {e}")
-
-
-# ── Due-date display helper (also used by task_handlers) ─────────────────────
-
-def _format_due_display(due_date: str) -> str:
-    """Convert a DB due_date string to display text with days-remaining info."""
-    if not due_date:
-        return "（期限なし）"
-    try:
-        today = date.today()
-        due   = date.fromisoformat(due_date[:10])
-        delta = (due - today).days
-        label = f"{due.month}/{due.day}"
-        if delta < 0:
-            return f"（期限：{label} ⚠️期限切れ）"
-        if delta == 0:
-            return "（期限：今日）"
-        if delta == 1:
-            return "（期限：明日）"
-        return f"（期限：{label} 残り{delta}日）"
-    except (ValueError, TypeError):
-        return f"（期限：{due_date[:10]}）"
 
 
 # ── Command handlers ──────────────────────────────────────────────────────────

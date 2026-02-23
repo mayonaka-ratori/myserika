@@ -11,6 +11,8 @@ import logging
 import re
 from datetime import datetime, timedelta
 
+from utils import safe_int as _safe_int  # consolidated in utils.py
+
 logger = logging.getLogger(__name__)
 
 # MF CSV column name mapping (Japanese header → internal key)
@@ -45,15 +47,6 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 
 # CSV エンコード候補（BOM 付き UTF-8 を最初に試す）
 _ENCODINGS = ["utf-8-sig", "shift-jis", "cp932"]
-
-
-def _safe_int(v: object, default: int = 0) -> int:
-    """Convert a value to int, tolerating comma separators, yen signs, and decimals.
-    Returns default on any conversion failure."""
-    try:
-        return int(str(v).replace(",", "").replace("¥", "").replace("￥", "").split(".")[0])
-    except (ValueError, TypeError):
-        return default
 
 
 def _parse_amount(s: str) -> int:
