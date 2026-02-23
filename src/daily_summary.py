@@ -212,6 +212,7 @@ async def send_daily_briefing(
     calendar_client=None,
     config: dict | None = None,
     task_manager=None,
+    db=None,
 ) -> None:
     """
     毎朝のブリーフィングメッセージを Telegram に送信する。
@@ -323,6 +324,39 @@ async def send_daily_briefing(
                 lines.append("")
             except Exception as e:
                 logger.warning(f"タスクセクションエラー（スキップ）/ Task section error: {e}")
+
+    # ── 💰 Expense section (conditional on day of month) ──────────────────
+    # Day 1-3: show previous month's expense summary
+    # Day 25-31: show current month's expense progress
+    if db is not None:
+        try:
+            exp_year = now.year
+            exp_month = now.month
+            if 1 <= now.day <= 3:
+                # Previous month
+                if exp_month == 1:
+                    exp_year -= 1
+                    exp_month = 12
+                else:
+                    exp_month -= 1
+                section_label = f"{exp_year}年{exp_month:02d}月 経費まとめ"
+            elif 25 <= now.day <= 31:
+                section_label = f"{exp_year}年{exp_month:02d}月 経費進捗"
+            else:
+                section_label = None
+
+            if section_label:
+                exp_rows = await db.get_monthly_summary(exp_year, exp_month)
+                grand_total = sum(r.get("total_amount", 0) for r in exp_rows)
+                top3 = exp_rows[:3]
+                lines.append(f"💰 <b>{section_label}（合計 ¥{grand_total:,}）</b>")
+                for r in top3:
+                    cat = html.escape(r.get("category") or "未分類")
+                    amt = r.get("total_amount", 0)
+                    lines.append(f"・{cat} ¥{amt:,}")
+                lines.append("")
+        except Exception as e:
+            logger.warning(f"Expense section error (skipped): {e}")
 
     # ── 📝 今日のTODO ──────────────────────────────
     lines.append("📝 <b>今日のTODO</b>")

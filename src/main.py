@@ -23,8 +23,8 @@ from gmail_client import (
 )
 from daily_summary import send_daily_briefing
 from gemini_client import init_client as init_gemini, generate_reply_draft
-from telegram_bot import (
-    build_application,
+from telegram_bot import build_application
+from handlers.common import (
     send_notification,
     send_email_summary,
     send_task_detection_notification,
@@ -559,6 +559,7 @@ async def daily_briefing_scheduler(
                     calendar_client=telegram_app.bot_data.get("calendar_client"),
                     config=config,
                     task_manager=telegram_app.bot_data.get("task_manager"),
+                    db=telegram_app.bot_data.get("db"),
                 )
                 last_sent_date = today
             except Exception as e:

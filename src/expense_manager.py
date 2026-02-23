@@ -47,13 +47,22 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 _ENCODINGS = ["utf-8-sig", "shift-jis", "cp932"]
 
 
+def _safe_int(v: object, default: int = 0) -> int:
+    """Convert a value to int, tolerating comma separators, yen signs, and decimals.
+    Returns default on any conversion failure."""
+    try:
+        return int(str(v).replace(",", "").replace("¥", "").replace("￥", "").split(".")[0])
+    except (ValueError, TypeError):
+        return default
+
+
 def _parse_amount(s: str) -> int:
-    """"1,234" / "-1,234" → int に変換する。
-    / Convert MF amount string to integer."""
+    """Convert a MoneyForward amount string like "1,234" / "-1,234" / "1,234.00" to int.
+    Accepts decimal notation by truncating (not rounding) the fractional part."""
     s = s.strip().replace(",", "")
     if not s:
         return 0
-    return int(s)
+    return int(float(s))
 
 
 def _parse_flag(s: str) -> int:
@@ -240,6 +249,8 @@ class ExpenseManager:
                         )
                     except Exception as e:
                         logger.error(f"Auto-match DB write error: {e}")
+                        # Fall back to manual review so the candidate is not silently lost
+                        likely_candidates.append({"mf": mf, "confidence": "likely"})
                 else:
                     likely_candidates.append({"mf": mf, "confidence": "likely"})
 
@@ -262,7 +273,7 @@ class ExpenseManager:
         self, date_str: str, amount: int, days: int = 2
     ) -> list[dict]:
         """Return MF spending transactions within ±days of date with matching absolute amount.
-        Spending rows have amount < 0 in MoneyForward; income rows (amount > 0) are excluded."""
+        Delegates to Database.get_mf_candidates_by_range; returns [] on any error."""
         try:
             base_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
         except (ValueError, TypeError):
@@ -273,24 +284,7 @@ class ExpenseManager:
         abs_amount = abs(amount)
 
         try:
-            import aiosqlite
-            async with aiosqlite.connect(self._db._db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    """
-                    SELECT * FROM moneyforward_transactions
-                    WHERE date BETWEEN ? AND ?
-                      AND ABS(amount) = ?
-                      AND amount < 0
-                      AND matched_expense_id IS NULL
-                      AND is_transfer = 0
-                      AND is_calculation_target = 1
-                    ORDER BY date DESC
-                    """,
-                    (date_from, date_to, abs_amount),
-                )
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+            return await self._db.get_mf_candidates_by_range(date_from, date_to, abs_amount)
         except Exception as e:
             logger.error(f"MF candidate fetch error: {e}")
             return []
@@ -299,33 +293,10 @@ class ExpenseManager:
         self, abs_amount: int, exclude_mf_ids: set[str] | None = None
     ) -> list[dict]:
         """Return MF spending transactions matching the absolute amount with no date constraint.
-        Used for "uncertain" confidence matches where only the amount aligns.
-        Excludes mf_ids already found by _get_mf_candidates_in_range to avoid duplicates."""
-        if exclude_mf_ids is None:
-            exclude_mf_ids = set()
-
+        Used for 'uncertain' confidence matches where only the amount aligns.
+        Delegates to Database.get_mf_candidates_by_amount; returns [] on any error."""
         try:
-            import aiosqlite
-            async with aiosqlite.connect(self._db._db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    """
-                    SELECT * FROM moneyforward_transactions
-                    WHERE ABS(amount) = ?
-                      AND amount < 0
-                      AND matched_expense_id IS NULL
-                      AND is_transfer = 0
-                      AND is_calculation_target = 1
-                    ORDER BY date DESC
-                    LIMIT 10
-                    """,
-                    (abs_amount,),
-                )
-                rows = await cursor.fetchall()
-                return [
-                    dict(row) for row in rows
-                    if row["mf_id"] not in exclude_mf_ids
-                ]
+            return await self._db.get_mf_candidates_by_amount(abs_amount, exclude_mf_ids)
         except Exception as e:
             logger.error(f"MF amount-only candidate fetch error: {e}")
             return []
@@ -439,13 +410,17 @@ class ExpenseManager:
                 if isinstance(it, dict):
                     items.append({
                         "name":     str(it.get("name") or ""),
-                        "price":    int(it["price"]) if it.get("price") is not None else 0,
-                        "quantity": int(it["quantity"]) if it.get("quantity") is not None else 1,
+                        "price":    _safe_int(it.get("price"), 0),
+                        "quantity": _safe_int(it.get("quantity"), 1),
                     })
 
         def _to_int_or_none(v: object) -> int | None:
+            if v is None:
+                return None
             try:
-                return int(v) if v is not None else None
+                return int(
+                    str(v).replace(",", "").replace("¥", "").replace("￥", "").split(".")[0]
+                )
             except (ValueError, TypeError):
                 return None
 
@@ -461,7 +436,7 @@ class ExpenseManager:
             "items":          items,
             "subtotal":       _to_int_or_none(parsed.get("subtotal")),
             "tax":            _to_int_or_none(parsed.get("tax")),
-            "total":          int(parsed.get("total") or 0),
+            "total":          _safe_int(parsed.get("total"), 0),
             "payment_method": payment_method,
         }
 
@@ -559,6 +534,172 @@ class ExpenseManager:
         except Exception as e:
             logger.warning(f"Gemini similarity check failed: {e}")
             return False
+
+
+    async def generate_monthly_report(self, year: int, month: int) -> str:
+        """Generate a formatted text report for the given year/month.
+
+        Includes per-category breakdown (name, amount, count), grand total,
+        payment method split (cash vs card), and MoneyForward match rate.
+        Returns a plain text string suitable for Telegram or web display.
+        """
+        month_str = f"{year:04d}-{month:02d}"
+        rows = await self._db.get_monthly_summary(year, month)
+
+        # Fetch payment method breakdown and MF match rate via Database abstraction
+        cash_total = card_total = other_total = 0
+        try:
+            report_data = await self._db.get_monthly_expense_report_data(month_str)
+            for pmr in report_data["payment_rows"]:
+                pm = (pmr["payment_method"] or "cash").lower()
+                t = abs(pmr["total"] or 0)
+                if pm == "cash":
+                    cash_total = t
+                elif pm in ("credit_card", "card"):
+                    card_total = t
+                else:
+                    other_total += t
+            total_count = report_data["total_count"]
+            matched_count = report_data["matched_count"]
+        except Exception as e:
+            logger.warning(f"generate_monthly_report: DB query error: {e}")
+            total_count = matched_count = 0
+
+        # Build report text
+        header = f"📊 {year}年{month:02d}月 経費サマリー"
+        lines = [header, "─" * 28]
+
+        grand_total = 0
+        if rows:
+            for r in rows:
+                cat = r.get("category") or "未分類"
+                amt = r.get("total_amount") or 0
+                cnt = r.get("count") or 0
+                grand_total += amt
+                lines.append(f"  {cat:<12} ¥{amt:>8,}  ({cnt}件)")
+        else:
+            lines.append("  （登録された経費はありません）")
+
+        lines.append("─" * 28)
+        lines.append(f"  合計             ¥{grand_total:>8,}")
+        lines.append("")
+
+        # Payment method split
+        lines.append("💳 支払方法内訳")
+        lines.append(f"  現金   ¥{cash_total:>8,}")
+        lines.append(f"  カード ¥{card_total:>8,}")
+        if other_total:
+            lines.append(f"  その他 ¥{other_total:>8,}")
+
+        # MF match rate
+        if total_count > 0:
+            rate = int(matched_count / total_count * 100)
+            lines.append("")
+            lines.append(f"🔗 MF 照合率: {matched_count}/{total_count} 件 ({rate}%)")
+
+        return "\n".join(lines)
+
+    async def generate_annual_report(self, year: int) -> dict:
+        """Generate a structured annual report dict for the given year.
+
+        Returns:
+            {
+                "year": int,
+                "categories": [
+                    {"name": str, "total": int, "count": int,
+                     "monthly": {1: int, ..., 12: int}},
+                    ...
+                ],
+                "grand_total": int,
+                "monthly_totals": {1: int, ..., 12: int},
+                "text": str,   # pre-formatted Telegram text
+            }
+        """
+        # Annual totals per category
+        annual_rows = await self._db.get_annual_summary(year)
+
+        # Monthly breakdown per category: fetch each month separately
+        monthly_by_cat: dict[str, dict[int, int]] = {}
+        monthly_totals: dict[int, int] = {}
+
+        for m in range(1, 13):
+            month_rows = await self._db.get_monthly_summary(year, m)
+            month_sum = 0
+            for r in month_rows:
+                cat = r.get("category") or "未分類"
+                amt = r.get("total_amount") or 0
+                monthly_by_cat.setdefault(cat, {})[m] = amt
+                month_sum += amt
+            monthly_totals[m] = month_sum
+
+        # Build category list in annual-total order
+        grand_total = 0
+        categories = []
+        for r in annual_rows:
+            cat = r.get("category") or "未分類"
+            total = r.get("total_amount") or 0
+            count = r.get("count") or 0
+            grand_total += total
+            monthly = {m: monthly_by_cat.get(cat, {}).get(m, 0) for m in range(1, 13)}
+            categories.append({
+                "name": cat,
+                "total": total,
+                "count": count,
+                "monthly": monthly,
+            })
+
+        # Build formatted text for Telegram display
+        text_lines = [
+            f"📋 {year}年 年間経費レポート",
+            "─" * 30,
+        ]
+        if categories:
+            for c in categories:
+                text_lines.append(
+                    f"  {c['name']:<12} ¥{c['total']:>9,}  ({c['count']}件)"
+                )
+        else:
+            text_lines.append("  （登録された経費はありません）")
+
+        text_lines.append("─" * 30)
+        text_lines.append(f"  年間合計         ¥{grand_total:>9,}")
+        text_lines.append("")
+        text_lines.append("月別合計")
+        for m in range(1, 13):
+            text_lines.append(f"  {m:02d}月  ¥{monthly_totals[m]:>8,}")
+
+        return {
+            "year": year,
+            "categories": categories,
+            "grand_total": grand_total,
+            "monthly_totals": monthly_totals,
+            "text": "\n".join(text_lines),
+        }
+
+    async def export_annual_csv(self, year: int, output_path: str) -> str:
+        """Export the annual expense report as a UTF-8 BOM CSV file.
+
+        Columns: 勘定科目, 金額, 件数
+        UTF-8 with BOM so Excel on Japanese Windows opens it correctly.
+        Creates parent directories as needed. Returns output_path.
+        """
+        import csv as _csv
+        from pathlib import Path as _Path
+
+        report = await self.generate_annual_report(year)
+        out = _Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(out, "w", encoding="utf-8-sig", newline="") as f:
+            writer = _csv.writer(f)
+            writer.writerow(["勘定科目", "金額", "件数"])
+            for c in report["categories"]:
+                writer.writerow([c["name"], c["total"], c["count"]])
+            # Footer row
+            writer.writerow(["合計", report["grand_total"], sum(c["count"] for c in report["categories"])])
+
+        logger.info(f"Annual CSV exported: {output_path} ({len(report['categories'])} categories)")
+        return output_path
 
 
 def _normalize_date(date_str: str) -> str:

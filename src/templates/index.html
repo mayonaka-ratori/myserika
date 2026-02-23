@@ -1063,6 +1063,95 @@
       display: block;
       margin-bottom: 5px;
     }
+
+    /* ─── Expense view ─── */
+
+    /* Match badge for MoneyForward reconciliation status */
+    .match-tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .match-tag.matched   { background: rgba(76,175,80,0.2);   color: var(--success); }
+    .match-tag.unmatched { background: rgba(255,152,0,0.2);   color: var(--warn); }
+
+    /* Payment method badge */
+    .pm-tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(33,150,243,0.15);
+      color: var(--info);
+    }
+
+    /* CSV upload drop zone */
+    .upload-zone {
+      border: 2px dashed var(--card-border);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      margin-bottom: 12px;
+    }
+    .upload-zone:hover { border-color: var(--accent); color: var(--text); }
+
+    /* Category bar label row */
+    .exp-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .exp-bar-label {
+      min-width: 110px;
+      font-size: 12px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .exp-bar-amount {
+      min-width: 80px;
+      text-align: right;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .exp-bar-wrap {
+      flex: 1;
+      height: 6px;
+      background: var(--card-border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .exp-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--accent);
+    }
+
+    /* Expense form inputs (reuse task-form-input style) */
+    .exp-form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .exp-form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .exp-form-group label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
   </style>
 </head>
 <body>
@@ -1104,6 +1193,10 @@
     <div class="nav-item" data-view="tasks" onclick="showView('tasks', this)">
       <span class="nav-icon">📋</span> タスク
       <span class="badge" id="nav-tasks-count">0</span>
+    </div>
+    <!-- 経費管理 / Expense management -->
+    <div class="nav-item" data-view="expenses" onclick="showView('expenses', this)">
+      <span class="nav-icon">💰</span> 経費
     </div>
     <div class="nav-item" data-view="settings" onclick="showView('settings', this)">
       <span class="nav-icon">⚙️</span> 設定
@@ -1375,6 +1468,141 @@
 
       </div><!-- /task-board -->
     </div><!-- /tasks -->
+
+    <!-- ═══ Expense management view ═══ -->
+    <div class="view" id="view-expenses" hidden>
+      <div class="view-title"><span>💰</span> 経費管理</div>
+
+      <!-- Stats row: current month totals -->
+      <div class="stats-row">
+        <div class="stat-item">
+          <div class="stat-value accent" id="exp-stat-total">¥0</div>
+          <div class="stat-label">今月合計</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value info" id="exp-stat-count">0</div>
+          <div class="stat-label">件数</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value success" id="exp-stat-match">0%</div>
+          <div class="stat-label">MF 照合率</div>
+        </div>
+      </div>
+
+      <!-- Month selector + reload -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <input type="month" id="exp-month-picker" class="task-form-input"
+               style="width:160px;" onchange="fetchExpenses()">
+        <button class="btn btn-secondary" onclick="fetchExpenses()">↺ 更新</button>
+        <a id="exp-csv-link" href="#" class="btn btn-primary" style="text-decoration:none;" target="_blank">
+          📥 年次 CSV
+        </a>
+      </div>
+
+      <div class="grid-2">
+
+        <!-- Category bar chart (CSS-only) -->
+        <div class="card">
+          <div class="card-header"><span class="icon">📊</span> カテゴリ別内訳</div>
+          <div id="exp-chart-body">
+            <div class="empty-state"><div class="empty-icon">📊</div>データを読み込み中...</div>
+          </div>
+        </div>
+
+        <!-- Recent expenses table -->
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div class="card-header" style="padding:16px 20px 0;">
+            <span class="icon">🧾</span> 経費一覧
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日付</th>
+                  <th>店舗名</th>
+                  <th style="text-align:right;">金額</th>
+                  <th>カテゴリ</th>
+                  <th>支払</th>
+                  <th>MF</th>
+                </tr>
+              </thead>
+              <tbody id="exp-tbody">
+                <tr><td colspan="6">
+                  <div class="empty-state"><div class="empty-icon">💳</div>データを読み込み中...</div>
+                </td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div><!-- /grid-2 -->
+
+      <!-- MF CSV upload -->
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-header"><span class="icon">📥</span> MoneyForward CSV インポート</div>
+        <div class="upload-zone" id="exp-upload-zone" onclick="document.getElementById('exp-csv-file').click()">
+          クリックまたはドラッグ＆ドロップで CSV ファイルを選択
+        </div>
+        <input type="file" id="exp-csv-file" accept=".csv" style="display:none;" onchange="uploadMfCsv(this)">
+        <div id="exp-upload-status" style="font-size:12px;color:var(--text-dim);"></div>
+      </div>
+
+      <!-- Manual expense entry form -->
+      <div class="card">
+        <div class="card-header"><span class="icon">➕</span> 経費を手動入力</div>
+        <div class="exp-form-row">
+          <div class="exp-form-group">
+            <label>日付</label>
+            <input type="date" id="exp-new-date" class="task-form-input">
+          </div>
+          <div class="exp-form-group" style="flex:2;min-width:180px;">
+            <label>店舗名・内容</label>
+            <input type="text" id="exp-new-store" class="task-form-input" placeholder="例: スターバックス">
+          </div>
+          <div class="exp-form-group">
+            <label>金額 (円)</label>
+            <input type="number" id="exp-new-amount" class="task-form-input" placeholder="500" min="0">
+          </div>
+          <div class="exp-form-group">
+            <label>勘定科目</label>
+            <select id="exp-new-category" class="task-form-select">
+              <option value="">── 選択 ──</option>
+              <option>通信費</option>
+              <option>旅費交通費</option>
+              <option>消耗品費</option>
+              <option>接待交際費</option>
+              <option>会議費</option>
+              <option>地代家賃</option>
+              <option>水道光熱費</option>
+              <option>広告宣伝費</option>
+              <option>外注費</option>
+              <option>新聞図書費</option>
+              <option>研修費</option>
+              <option>雑費</option>
+            </select>
+          </div>
+          <div class="exp-form-group">
+            <label>支払方法</label>
+            <select id="exp-new-pm" class="task-form-select">
+              <option value="cash">現金</option>
+              <option value="credit_card">カード</option>
+              <option value="electronic">電子マネー</option>
+            </select>
+          </div>
+          <div class="exp-form-group" style="justify-content:flex-end;">
+            <label style="visibility:hidden;">-</label>
+            <button class="btn btn-primary" onclick="createExpense()">➕ 追加</button>
+          </div>
+        </div>
+        <div class="exp-form-row">
+          <div class="exp-form-group" style="grid-column:1/-1;">
+            <label>メモ（任意）</label>
+            <input type="text" id="exp-new-note" class="task-form-input" placeholder="自由記述">
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /expenses -->
 
     <!-- ═══ 設定ビュー ═══ -->
     <div class="view" id="view-settings" hidden>
@@ -1677,7 +1905,8 @@
       'info':   ['info-tag', '情報'],
       'spam':   ['spam', 'スパム'],
     };
-    const [cls, label] = map[cat] || ['info-tag', cat || '-'];
+    const [cls, rawLabel] = map[cat] || ['info-tag', cat || '-'];
+    const label = esc(rawLabel);
     return `<span class="category-tag ${cls}">${label}</span>`;
   }
 
@@ -1689,7 +1918,8 @@
       'rejected':  ['rejected',  '却下'],
       'read_only': ['read_only', '閲覧のみ'],
     };
-    const [cls, label] = map[status] || ['pending', status || '-'];
+    const [cls, rawLabel] = map[status] || ['pending', status || '-'];
+    const label = esc(rawLabel);
     return `<span class="status-tag ${cls}">${label}</span>`;
   }
 
@@ -2590,6 +2820,210 @@
   setInterval(fetchApiUsage, 30000);
   setInterval(fetchTaskStats, 30000);
   connectWS();
+
+  // ════════════════════════════════════════════════
+  // Expense management
+  // ════════════════════════════════════════════════
+
+  // Initialize month picker to current month on first render
+  (function initExpenseMonth() {
+    const picker = document.getElementById('exp-month-picker');
+    if (picker) {
+      const now = new Date();
+      picker.value = now.toISOString().slice(0, 7);
+    }
+    // Set annual CSV link to current year
+    const year = new Date().getFullYear();
+    const link = document.getElementById('exp-csv-link');
+    if (link) link.href = `/api/expenses/annual/${year}/csv`;
+  })();
+
+  // Fetch and render the expense view for the selected month
+  async function fetchExpenses() {
+    const picker = document.getElementById('exp-month-picker');
+    const month  = picker ? picker.value : new Date().toISOString().slice(0, 7);
+
+    if (!month) return;
+
+    const [yearStr, monthStr] = month.split('-');
+    const year  = parseInt(yearStr,  10);
+    const monthN = parseInt(monthStr, 10);
+
+    // Update CSV link year
+    const link = document.getElementById('exp-csv-link');
+    if (link) link.href = `/api/expenses/annual/${year}/csv`;
+
+    // Fetch monthly summary for bar chart and stats
+    try {
+      const res = await fetch(`/api/expenses/monthly/${year}/${monthN}`);
+      if (res.ok) {
+        const rows = await res.json();
+        renderExpenseChart(rows);
+        renderExpenseStats(rows);
+      }
+    } catch (e) {
+      console.warn('fetchExpenses monthly error', e);
+    }
+
+    // Fetch expense list for the table
+    try {
+      const res = await fetch(`/api/expenses?month=${encodeURIComponent(month)}&limit=100`);
+      if (res.ok) {
+        const expenses = await res.json();
+        renderExpenseTable(expenses);
+      }
+    } catch (e) {
+      console.warn('fetchExpenses list error', e);
+    }
+  }
+
+  // Render per-category stats (total, count, match rate) into stat items
+  function renderExpenseStats(rows) {
+    const grandTotal = rows.reduce((s, r) => s + (r.total_amount || 0), 0);
+    const grandCount = rows.reduce((s, r) => s + (r.count || 0), 0);
+    _setEl('exp-stat-total', '¥' + grandTotal.toLocaleString('ja-JP'));
+    _setEl('exp-stat-count', grandCount);
+    // Match rate is shown separately via the expense list; leave the stat as-is
+  }
+
+  // Render CSS-only horizontal bar chart for category breakdown
+  function renderExpenseChart(rows) {
+    const el = document.getElementById('exp-chart-body');
+    if (!el) return;
+    if (!rows || !rows.length) {
+      el.innerHTML = `<div class="empty-state"><div class="empty-icon">📊</div>データがありません</div>`;
+      return;
+    }
+    const maxAmt = Math.max(...rows.map(r => r.total_amount || 0), 1);
+    el.innerHTML = rows.map(r => {
+      const cat = r.category || '未分類';
+      const amt = r.total_amount || 0;
+      const pct = Math.round(amt / maxAmt * 100);
+      return `
+        <div class="exp-bar-row">
+          <span class="exp-bar-label" title="${esc(cat)}">${esc(cat)}</span>
+          <div class="exp-bar-wrap">
+            <div class="exp-bar-fill" style="width:${pct}%"></div>
+          </div>
+          <span class="exp-bar-amount">¥${amt.toLocaleString('ja-JP')}</span>
+        </div>`;
+    }).join('');
+  }
+
+  // Render the expense list table
+  function renderExpenseTable(expenses) {
+    const tbody = document.getElementById('exp-tbody');
+    if (!tbody) return;
+    if (!expenses || !expenses.length) {
+      tbody.innerHTML = `<tr><td colspan="6">
+        <div class="empty-state"><div class="empty-icon">💳</div>経費がありません</div>
+      </td></tr>`;
+      return;
+    }
+
+    // Compute match rate for stat badge
+    const matched = expenses.filter(e => e.moneyforward_matched).length;
+    const rate = expenses.length ? Math.round(matched / expenses.length * 100) : 0;
+    _setEl('exp-stat-match', rate + '%');
+
+    const pmLabel = { cash: '現金', credit_card: 'カード', electronic: '電子マネー' };
+
+    tbody.innerHTML = expenses.map(e => {
+      const dateStr = (e.date || '').slice(0, 10);
+      const store   = e.store_name || '';
+      const amount  = e.amount || 0;
+      const cat     = e.category || '-';
+      const pm      = e.payment_method || 'cash';
+      const mf      = e.moneyforward_matched ? 1 : 0;
+      return `
+        <tr>
+          <td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${esc(dateStr)}</td>
+          <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+              title="${esc(store)}">${esc(store)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;">¥${amount.toLocaleString('ja-JP')}</td>
+          <td><span class="category-tag info-tag">${esc(cat)}</span></td>
+          <td><span class="pm-tag">${esc(pmLabel[pm] || pm)}</span></td>
+          <td><span class="match-tag ${mf ? 'matched' : 'unmatched'}">${mf ? '照合済' : '未照合'}</span></td>
+        </tr>`;
+    }).join('');
+  }
+
+  // Upload a MoneyForward CSV file via the import endpoint
+  async function uploadMfCsv(input) {
+    const statusEl = document.getElementById('exp-upload-status');
+    if (!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    if (statusEl) statusEl.textContent = `📤 ${file.name} をアップロード中...`;
+
+    const form = new FormData();
+    form.append('file', file);
+
+    try {
+      const res = await fetch('/api/expenses/import-mf', {
+        method: 'POST',
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (statusEl) statusEl.textContent = `❌ エラー: ${data.detail || '失敗'}`;
+        return;
+      }
+      const msg = `✅ ${data.imported}件 インポート（スキップ: ${data.skipped}件）`;
+      if (statusEl) statusEl.textContent = msg;
+      showToast(msg);
+      fetchExpenses();
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `❌ ネットワークエラー: ${e}`;
+    } finally {
+      // Reset the file input so the same file can be re-uploaded if needed
+      input.value = '';
+    }
+  }
+
+  // Create a new manual expense entry
+  async function createExpense() {
+    const date  = document.getElementById('exp-new-date')?.value;
+    const store = document.getElementById('exp-new-store')?.value.trim();
+    const amt   = parseInt(document.getElementById('exp-new-amount')?.value || '0', 10);
+    const cat   = document.getElementById('exp-new-category')?.value || '';
+    const pm    = document.getElementById('exp-new-pm')?.value || 'cash';
+    const note  = document.getElementById('exp-new-note')?.value.trim() || null;
+
+    if (!date)  { showToast('⚠️ 日付を入力してください'); return; }
+    if (!store) { showToast('⚠️ 店舗名を入力してください'); return; }
+    if (!amt || amt <= 0) { showToast('⚠️ 金額を入力してください'); return; }
+
+    try {
+      const res = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, store_name: store, amount: amt, category: cat, payment_method: pm, note }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('❌ エラー: ' + (data.detail || '作成失敗'));
+        return;
+      }
+      showToast(`✅ 経費を追加しました: ${store} ¥${amt.toLocaleString('ja-JP')}`);
+      // Reset form
+      ['exp-new-date','exp-new-store','exp-new-amount','exp-new-note'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      fetchExpenses();
+    } catch (e) {
+      showToast('❌ ネットワークエラー: ' + e);
+    }
+  }
+
+  // Wire showView to load expense data on first visit
+  const _origShowView = showView;
+  showView = function(id, navEl) {
+    _origShowView(id, navEl);
+    if (id === 'expenses') {
+      fetchExpenses();
+    }
+  };
 </script>
 </body>
 </html>

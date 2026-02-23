@@ -8,19 +8,23 @@ import asyncio
 import copy
 import logging
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from pydantic import BaseModel
-from fastapi.responses import HTMLResponse
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel, field_validator
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
+
+# Maximum accepted size for MoneyForward CSV uploads (10 MB)
+MAX_CSV_BYTES = 10 * 1024 * 1024
 
 _BASE_DIR = Path(__file__).parent
 
@@ -699,3 +703,215 @@ async def api_tasks_delete(task_id: int) -> dict[str, str]:
     push_event("info", f"🗑️ タスク削除: id={task_id}", {"task_id": task_id})
     logger.info(f"タスク削除: id={task_id}")
     return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────
+# Expense management endpoints
+# ─────────────────────────────────────────────
+
+class ExpenseCreateBody(BaseModel):
+    """Request body for manual expense entry."""
+    date: str                        # YYYY-MM-DD
+    store_name: str
+    amount: int
+    category: str = ""
+    payment_method: str = "cash"     # cash / credit_card / electronic
+    note: str | None = None
+    tax_amount: int | None = None
+
+    @field_validator("date")
+    @classmethod
+    def _validate_date(cls, v: str) -> str:
+        if v and not re.fullmatch(
+            r"\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])", v
+        ):
+            raise ValueError("date must be YYYY-MM-DD")
+        return v
+
+
+class ExpenseUpdateBody(BaseModel):
+    """Partial update body for an existing expense.
+    Only non-None fields are applied."""
+    date: str | None = None
+    store_name: str | None = None
+    amount: int | None = None
+    category: str | None = None
+    payment_method: str | None = None
+    note: str | None = None
+    tax_amount: int | None = None
+
+    @field_validator("date")
+    @classmethod
+    def _validate_date(cls, v: str | None) -> str | None:
+        if v and not re.fullmatch(
+            r"\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])", v
+        ):
+            raise ValueError("date must be YYYY-MM-DD")
+        return v
+
+
+# NOTE: /api/expenses/monthly and /api/expenses/annual must be declared
+# BEFORE /api/expenses/{expense_id} so FastAPI does not treat the literal
+# path segments as integer IDs.
+
+@app.get("/api/expenses/monthly/{year}/{month}")
+async def api_expenses_monthly(year: int, month: int) -> list[dict]:
+    """Return per-category monthly summary for the given year/month."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB not initialized")
+    return await db.get_monthly_summary(year, month)
+
+
+@app.get("/api/expenses/annual/{year}/csv")
+async def api_expenses_annual_csv(year: int) -> FileResponse:
+    """Generate and download the annual expense CSV (UTF-8 with BOM)."""
+    expense_manager = _bot_data.get("expense_manager")
+    if not expense_manager:
+        raise HTTPException(status_code=503, detail="ExpenseManager not initialized")
+
+    output_path = str(
+        Path(__file__).parent.parent / "data" / "reports" / f"{year}_annual_expense.csv"
+    )
+    try:
+        await expense_manager.export_annual_csv(year, output_path)
+    except Exception as e:
+        logger.error(f"Annual CSV export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return FileResponse(
+        path=output_path,
+        filename=f"{year}_annual_expense.csv",
+        media_type="text/csv",
+    )
+
+
+@app.get("/api/expenses/annual/{year}")
+async def api_expenses_annual(year: int) -> dict:
+    """Return structured annual expense report for the given year."""
+    expense_manager = _bot_data.get("expense_manager")
+    if not expense_manager:
+        raise HTTPException(status_code=503, detail="ExpenseManager not initialized")
+    try:
+        return await expense_manager.generate_annual_report(year)
+    except Exception as e:
+        logger.error(f"Annual report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/expenses")
+async def api_expenses_list(
+    month: str | None = None,
+    category: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return expense list. Optional filters: month (YYYY-MM), category, limit."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB not initialized")
+    return await db.get_expenses(month=month, category=category, limit=limit)
+
+
+@app.post("/api/expenses")
+async def api_expenses_create(body: ExpenseCreateBody) -> dict[str, Any]:
+    """Create a new manual expense entry."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB not initialized")
+
+    valid_pm = {"cash", "credit_card", "electronic"}
+    if body.payment_method not in valid_pm:
+        raise HTTPException(status_code=400, detail=f"Invalid payment_method: {body.payment_method}")
+
+    expense_id = await db.save_expense(
+        date=body.date,
+        store_name=body.store_name,
+        amount=body.amount,
+        category=body.category,
+        tax_amount=body.tax_amount,
+        payment_method=body.payment_method,
+        note=body.note,
+        source="manual",
+    )
+
+    push_event("info", f"💰 経費追加: {body.store_name[:30]} ¥{body.amount:,}", {"expense_id": expense_id})
+    logger.info(f"Expense created: id={expense_id} store={body.store_name}")
+    return {"status": "ok", "id": expense_id}
+
+
+@app.put("/api/expenses/{expense_id}")
+async def api_expenses_update(expense_id: int, body: ExpenseUpdateBody) -> dict[str, str]:
+    """Partially update an existing expense."""
+    db = _bot_data.get("db")
+    if not db:
+        raise HTTPException(status_code=503, detail="DB not initialized")
+
+    fields: dict[str, Any] = {}
+    if body.date is not None:
+        fields["date"] = body.date
+    if body.store_name is not None:
+        if not body.store_name.strip():
+            raise HTTPException(status_code=400, detail="store_name cannot be empty")
+        fields["store_name"] = body.store_name.strip()
+    if body.amount is not None:
+        fields["amount"] = body.amount
+    if body.category is not None:
+        fields["category"] = body.category
+    if body.payment_method is not None:
+        valid_pm = {"cash", "credit_card", "electronic"}
+        if body.payment_method not in valid_pm:
+            raise HTTPException(status_code=400, detail=f"Invalid payment_method: {body.payment_method}")
+        fields["payment_method"] = body.payment_method
+    if body.note is not None:
+        fields["note"] = body.note
+    if body.tax_amount is not None:
+        fields["tax_amount"] = body.tax_amount
+
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        await db.update_expense(expense_id, **fields)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    logger.info(f"Expense updated: id={expense_id} fields={list(fields)}")
+    return {"status": "ok"}
+
+
+@app.post("/api/expenses/import-mf")
+async def api_expenses_import_mf(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Accept a MoneyForward ME CSV upload and import it into the DB."""
+    expense_manager = _bot_data.get("expense_manager")
+    if not expense_manager:
+        raise HTTPException(status_code=503, detail="ExpenseManager not initialized")
+
+    # Read upload with a hard size cap to prevent memory exhaustion
+    data = await file.read(MAX_CSV_BYTES + 1)
+    if len(data) > MAX_CSV_BYTES:
+        raise HTTPException(status_code=413, detail="CSV file too large (max 10 MB)")
+
+    # Save to a temporary file for import processing
+    suffix = Path(file.filename or "upload.csv").suffix or ".csv"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        result = await expense_manager.import_moneyforward_csv(tmp_path)
+    except Exception as e:
+        logger.error(f"MF CSV import error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    push_event(
+        "info",
+        f"📥 MF CSV インポート: {result['imported']}件追加",
+        {"imported": result["imported"], "skipped": result["skipped"]},
+    )
+    logger.info(f"MF CSV imported: {result}")
+    return result

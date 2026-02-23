@@ -1070,8 +1070,9 @@ class Database:
             await db.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
             await db.commit()
 
-    async def get_unmatched_expenses(self) -> list[dict]:
-        """Return all expenses that have not been matched to a MoneyForward transaction."""
+    async def get_unmatched_expenses(self, limit: int = 100) -> list[dict]:
+        """Return expenses that have not been matched to a MoneyForward transaction.
+        Capped at limit rows to avoid full-table scans on large datasets."""
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
@@ -1079,7 +1080,94 @@ class Database:
                 SELECT * FROM expenses
                 WHERE moneyforward_matched = 0
                 ORDER BY date DESC
+                LIMIT ?
                 """,
+                (limit,),
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def get_mf_candidates_by_range(
+        self, date_from: str, date_to: str, abs_amount: int
+    ) -> list[dict]:
+        """Return unmatched MF spending rows within a date range matching abs_amount.
+        Spending rows have amount < 0; income rows are excluded.
+        Results are capped at 10 to bound per-expense query cost."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM moneyforward_transactions
+                WHERE date BETWEEN ? AND ?
+                  AND ABS(amount) = ?
+                  AND amount < 0
+                  AND matched_expense_id IS NULL
+                  AND is_transfer = 0
+                  AND is_calculation_target = 1
+                ORDER BY date DESC
+                LIMIT 10
+                """,
+                (date_from, date_to, abs_amount),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_mf_candidates_by_amount(
+        self, abs_amount: int, exclude_mf_ids: set[str] | None = None
+    ) -> list[dict]:
+        """Return unmatched MF spending rows matching abs_amount with no date constraint.
+        Used for 'uncertain' confidence matches. Excludes IDs already found by
+        get_mf_candidates_by_range to prevent duplicate suggestions."""
+        if exclude_mf_ids is None:
+            exclude_mf_ids = set()
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM moneyforward_transactions
+                WHERE ABS(amount) = ?
+                  AND amount < 0
+                  AND matched_expense_id IS NULL
+                  AND is_transfer = 0
+                  AND is_calculation_target = 1
+                ORDER BY date DESC
+                LIMIT 10
+                """,
+                (abs_amount,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows if row["mf_id"] not in exclude_mf_ids]
+
+    async def get_monthly_expense_report_data(self, month_str: str) -> dict:
+        """Return payment-method totals and MF match-rate data for a month (YYYY-MM).
+        Returns {"payment_rows": list[dict], "total_count": int, "matched_count": int}."""
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT payment_method, SUM(amount) AS total
+                FROM expenses
+                WHERE date LIKE ?
+                GROUP BY payment_method
+                """,
+                (f"{month_str}%",),
+            )
+            pm_rows = await cursor.fetchall()
+
+            cursor = await db.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN moneyforward_matched = 1 THEN 1 ELSE 0 END) AS matched
+                FROM expenses
+                WHERE date LIKE ?
+                """,
+                (f"{month_str}%",),
+            )
+            match_row = await cursor.fetchone()
+
+        return {
+            "payment_rows": [dict(row) for row in pm_rows],
+            "total_count": match_row["total"] if match_row else 0,
+            "matched_count": match_row["matched"] if match_row else 0,
+        }
