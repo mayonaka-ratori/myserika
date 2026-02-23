@@ -1,30 +1,70 @@
+# ============================================================
+# my-secretary Configuration / 設定ファイル
+# ============================================================
+# Copy this file to config.yaml and fill in your API keys.
+# このファイルを config.yaml にコピーして API キーを設定してください。
+# ============================================================
+
+# --- Gmail ---
 gmail:
   credentials_path: "./credentials.json"
   token_path: "./token.json"
   check_interval_minutes: 5
 
+# --- Gemini AI ---
 gemini:
   api_key: "YOUR_GEMINI_API_KEY_HERE"
   model: "gemini-2.5-flash"
-  # 無料枠あり。将来的にgemini-3-flashが無料化されたら切り替え推奨
 
+# --- Telegram Bot ---
 telegram:
   bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"
   chat_id: "YOUR_TELEGRAM_CHAT_ID_HERE"
 
-daily_summary:
-  send_time: "08:00"  # 日次ブリーフィングの送信時刻（HH:MM、JST）
-
-quiet_hours:
-  enabled: true
-  start: "00:00"
-  end: "07:00"
-
+# --- Discord ---
 discord:
   bot_token: "YOUR_DISCORD_BOT_TOKEN_HERE"
   monitored_channels:
     - server_name: "YOUR_SERVER_NAME_HERE"
-      channel_ids: []   # 空リストなら全チャンネル監視
+      channel_ids: []         # Empty list = monitor all channels
   dm_monitoring: true
   summary_interval_minutes: 360
   mention_instant_notify: true
+  reply_generation: true      # Enable AI reply draft generation
+  style_learning: true        # Learn your Discord writing style
+  reply_reminder_hours: 2     # Remind if unreplied after N hours
+
+# --- Google Calendar ---
+calendar:
+  enabled: true
+  # Uses credentials.json for OAuth (same as Gmail)
+
+# --- AI Task Manager ---
+task:
+  enabled: true
+  auto_extract: true          # Auto-extract tasks from emails/Discord
+  reminder_hours_before: 3    # Remind N hours before deadline
+  daily_top_n: 3              # Show top N tasks in daily briefing
+
+# --- Expense & Receipt Management ---
+expense:
+  enabled: true
+  receipt_save_path: "./data/receipts/"
+  default_tax_rate: 0.10
+  fiscal_year_start: "01-01"  # Jan 1 for individual business (個人事業主)
+
+# --- Web Dashboard ---
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
+# --- Daily Briefing ---
+daily_summary:
+  send_time: "08:00"          # JST, HH:MM format
+
+# --- Quiet Hours (pause notifications) ---
+quiet_hours:
+  enabled: true
+  start: "23:00"
+  end: "07:00"
