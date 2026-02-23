@@ -1272,7 +1272,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data == "expense_receipt":
         await query.edit_message_text(
-            "📸 レシートの写真を送信してください。\n（近日実装予定 / Coming soon）"
+            "📸 レシートの写真を送信してください。/ Please send a photo of your receipt."
         )
 
     elif data == "expense_summary":
@@ -1363,6 +1363,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for item in results[:5]:
                 expense = item["expense"]
                 candidates = item["candidates"]
+                exp_id = expense["id"]
                 exp_desc = html.escape(expense.get("store_name", ""))
                 exp_date = expense.get("date", "")[:10]
                 exp_amount = expense.get("amount", 0)
@@ -1372,20 +1373,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 for cand in candidates[:3]:
                     mf = cand["mf"]
                     conf = cand["confidence"]
-                    mf_id = mf["mf_id"]
                     mf_content = html.escape(mf.get("content", ""))
                     mf_date = mf.get("date", "")[:10]
                     lines.append(f"  [{conf}] {mf_date} {mf_content}")
+
+                # Build keyboard: best (first) candidate for Match button; always show cash/skip
+                if candidates:
+                    best_mf_id = candidates[0]["mf"]["mf_id"]
+                    kb = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(
+                                "✅ 照合確定",
+                                callback_data=f"ematch_y:{exp_id}:{best_mf_id}",
+                            ),
+                            InlineKeyboardButton(
+                                "❌ 現金払い",
+                                callback_data=f"ematch_cash:{exp_id}",
+                            ),
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "⏭ スキップ",
+                                callback_data=f"ematch_skip:{exp_id}",
+                            ),
+                        ],
+                    ])
+                else:
                     kb = InlineKeyboardMarkup([[
                         InlineKeyboardButton(
-                            "✅ 照合確定",
-                            callback_data=f"ematch_y:{expense['id']}:{mf_id}"
+                            "❌ 現金払い",
+                            callback_data=f"ematch_cash:{exp_id}",
                         ),
                         InlineKeyboardButton(
-                            "❌ 無視",
-                            callback_data=f"ematch_no:{mf_id}"
+                            "⏭ スキップ",
+                            callback_data=f"ematch_skip:{exp_id}",
                         ),
                     ]])
+
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
@@ -1394,7 +1418,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         reply_markup=kb,
                     )
                 except Exception as e:
-                    logger.warning(f"照合候補通知エラー: {e}")
+                    logger.warning(f"Match candidate send error: {e}")
 
     elif data.startswith("ematch_y:"):
         # "ematch_y:{expense_id}:{mft_id}"
@@ -1411,9 +1435,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("✅ 照合を確定しました。/ Match confirmed.")
 
     elif data.startswith("ematch_no:"):
-        # "ematch_no:{mft_id}"
-        mft_id = data.split(":", 1)[1]
-        await query.edit_message_text("❌ 現金払い（照合なし）として登録しました。/ Marked as cash (no match).")
+        # "ematch_no:{mft_id}" — legacy path used by the MF-only (no expenses) review flow
+        await query.edit_message_text("❌ 無視しました。/ Ignored.")
+
+    elif data.startswith("ematch_cash:"):
+        # Mark expense as confirmed cash payment — no MoneyForward transaction expected
+        exp_id_str = data.split(":", 1)[1]
+        db = context.bot_data.get("db")
+        if db and exp_id_str.isdigit():
+            try:
+                await db.update_expense(int(exp_id_str), moneyforward_matched=1)
+            except Exception as e:
+                logger.warning(f"ematch_cash DB update error: {e}")
+        await query.edit_message_text(
+            "❌ 現金払いとして記録しました。/ Recorded as cash payment (no MF match)."
+        )
+
+    elif data.startswith("ematch_skip:"):
+        # No DB change — user defers this expense review to a later session
+        await query.edit_message_text(
+            "⏭ スキップしました。/expense から再度確認できます。/ Skipped for now."
+        )
 
     elif data == "expense_annual":
         db = context.bot_data.get("db")
@@ -2160,9 +2202,9 @@ async def handle_document(
 
     expense_manager = context.bot_data.get("expense_manager")
     try:
-        count = await expense_manager.import_moneyforward_csv(tmp_path)
+        result = await expense_manager.import_moneyforward_csv(tmp_path)
     except Exception as e:
-        logger.error(f"CSV インポートエラー / CSV import error: {e}")
+        logger.error(f"CSV import error: {e}")
         await update.message.reply_text(
             f"⚠️ インポートに失敗しました：{html.escape(str(e))}", parse_mode="HTML"
         )
@@ -2171,15 +2213,19 @@ async def handle_document(
         import os as _os
         _os.unlink(tmp_path)
 
+    n_imported = result["imported"]
+    n_skipped = result["skipped"]
+    errors = result.get("errors", [])
+    summary = f"✅ <b>{n_imported}件インポートしました</b>（{n_skipped}件は重複スキップ）"
+    if errors:
+        summary += f"\n⚠️ パースエラー {len(errors)}件（例：{html.escape(errors[0])}）"
+    summary += "\n照合を実行しますか？"
+
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ 照合を実行", callback_data="expense_match_run"),
         InlineKeyboardButton("後で", callback_data="expense_later"),
     ]])
-    await update.message.reply_text(
-        f"✅ <b>{count}件インポートしました。</b>\n照合を実行しますか？",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
+    await update.message.reply_text(summary, parse_mode="HTML", reply_markup=keyboard)
 
 
 def _log_classification_correction(email: dict, memory_path: str) -> None:

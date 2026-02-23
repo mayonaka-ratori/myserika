@@ -90,9 +90,9 @@ class ExpenseManager:
         self._db = db
         self._gemini = gemini_client
 
-    async def import_moneyforward_csv(self, file_path: str) -> int:
-        """MF CSV を読み込んで DB に保存し、インポート件数を返す。
-        / Parse MoneyForward CSV and persist to DB; returns count of new rows."""
+    async def import_moneyforward_csv(self, file_path: str) -> dict:
+        """Parse MoneyForward ME CSV and persist to DB.
+        Returns {"imported": int, "skipped": int, "errors": list[str]}."""
         # エンコード順試行
         content: str | None = None
         for enc in _ENCODINGS:
@@ -113,6 +113,7 @@ class ExpenseManager:
 
         new_count = 0
         skipped = 0
+        errors: list[str] = []
 
         for row in reader:
             # ID が空の行はスキップ
@@ -136,14 +137,18 @@ class ExpenseManager:
             # 日付を YYYY-MM-DD に正規化
             date_normalized = _normalize_date(date_str)
             if not date_normalized:
-                logger.warning(f"日付パース失敗でスキップ: {date_str!r} (ID={mf_id})")
+                msg = f"Date parse failed for ID={mf_id}: {date_str!r}"
+                logger.warning(msg)
+                errors.append(msg)
                 skipped += 1
                 continue
 
             try:
                 amount = _parse_amount(amount_str)
             except ValueError:
-                logger.warning(f"金額パース失敗でスキップ: {amount_str!r} (ID={mf_id})")
+                msg = f"Amount parse failed for ID={mf_id}: {amount_str!r}"
+                logger.warning(msg)
+                errors.append(msg)
                 skipped += 1
                 continue
 
@@ -161,30 +166,24 @@ class ExpenseManager:
             )
             if inserted:
                 new_count += 1
+            else:
+                skipped += 1  # duplicate mf_id already in DB
 
         logger.info(
-            f"MF CSV インポート完了: 新規 {new_count} 件, スキップ {skipped} 件"
-            f" / MF CSV import done: {new_count} new, {skipped} skipped"
+            f"MF CSV import done: {new_count} new, {skipped} skipped, {len(errors)} errors"
         )
-        return new_count
+        return {"imported": new_count, "skipped": skipped, "errors": errors}
 
     async def match_with_moneyforward(self) -> list[dict]:
-        """
-        expenses テーブルの未照合レコードに対して MF 候補を探す。
-        / Find MoneyForward candidates for unmatched expense records.
+        """Find MoneyForward candidates for unmatched expense records.
 
-        戻り値 / Returns:
-            [
-                {
-                    "expense": {...},
-                    "candidates": [
-                        {"mf": {...}, "confidence": "確実"|"可能性高"|"不明"}
-                    ]
-                },
-                ...
-            ]
+        Confidence levels:
+          - "certain":   ±1-day, exact amount, name similarity → auto-matched silently.
+          - "likely":    ±2-day, exact amount, not "certain"   → returned for user review.
+          - "uncertain": amount-only match, outside ±2-day     → returned for manual review.
+
+        Returns only "likely" and "uncertain" items; "certain" are resolved in DB automatically.
         """
-        # Fetch unmatched expenses
         try:
             unmatched_expenses = await self._db.get_unmatched_expenses()
         except Exception as e:
@@ -197,48 +196,73 @@ class ExpenseManager:
             expense_date = expense.get("date", "")
             expense_amount = expense.get("amount", 0)
             expense_desc = expense.get("store_name", "")
+            abs_amount = abs(expense_amount)
 
-            # ±2日の日付範囲で候補を絞り込む
-            candidates_raw = await self._get_mf_candidates_in_range(
-                expense_date, expense_amount, days=2
+            # Step 1: ±2-day, exact-amount, spending-only MF candidates
+            candidates_2day = await self._get_mf_candidates_in_range(
+                expense_date, abs_amount, days=2
             )
 
-            candidates = []
-            auto_matched = False
+            found_mf_ids: set[str] = set()
+            certain_matched = False
+            likely_candidates: list[dict] = []
 
-            for mf in candidates_raw:
+            for mf in candidates_2day:
+                mf_id = mf.get("mf_id", "")
+                found_mf_ids.add(mf_id)
                 mf_content = mf.get("content", "")
 
-                # 部分一致チェック
-                if _partial_match_score(expense_desc, mf_content):
-                    confidence = "確実"
-                    # Auto-match on high-confidence partial string match
-                    if not auto_matched:
-                        await self._db.match_expense_to_mf(expense["id"], mf["mf_id"])
-                        auto_matched = True
-                else:
-                    # Gemini で類似判定
+                # Calendar-day delta to distinguish ±1-day ("certain") from ±2-day ("likely")
+                try:
+                    mf_dt = datetime.strptime(mf.get("date", "")[:10], "%Y-%m-%d")
+                    exp_dt = datetime.strptime(expense_date[:10], "%Y-%m-%d")
+                    day_delta = abs((mf_dt - exp_dt).days)
+                except (ValueError, TypeError):
+                    day_delta = 99
+
+                # Name similarity: substring first, Gemini as fallback
+                name_match = _partial_match_score(expense_desc, mf_content)
+                if not name_match:
                     try:
-                        is_similar = await self._gemini_similarity_check(
+                        name_match = await self._gemini_similarity_check(
                             expense_desc, mf_content
                         )
                     except Exception as e:
-                        logger.warning(f"Gemini 類似判定エラー (スキップ): {e}")
-                        is_similar = False
-                    confidence = "可能性高" if is_similar else "不明"
+                        logger.warning(f"Gemini similarity check skipped: {e}")
 
-                candidates.append({"mf": mf, "confidence": confidence})
+                if day_delta <= 1 and name_match and not certain_matched:
+                    # "certain" → auto-match silently, do not add to results
+                    try:
+                        await self._db.match_expense_to_mf(expense["id"], mf_id)
+                        certain_matched = True
+                        logger.info(
+                            f"Auto-matched expense {expense['id']} to MF {mf_id} (certain)"
+                        )
+                    except Exception as e:
+                        logger.error(f"Auto-match DB write error: {e}")
+                else:
+                    likely_candidates.append({"mf": mf, "confidence": "likely"})
 
-            if candidates or not auto_matched:
-                results.append({"expense": expense, "candidates": candidates})
+            if certain_matched:
+                continue  # expense fully resolved — move to next
+
+            # Step 2: Amount-only matches outside the ±2-day window ("uncertain")
+            uncertain_candidates: list[dict] = []
+            for mf in await self._get_mf_candidates_amount_only(abs_amount, found_mf_ids):
+                uncertain_candidates.append({"mf": mf, "confidence": "uncertain"})
+
+            results.append({
+                "expense": expense,
+                "candidates": likely_candidates + uncertain_candidates,
+            })
 
         return results
 
     async def _get_mf_candidates_in_range(
         self, date_str: str, amount: int, days: int = 2
     ) -> list[dict]:
-        """指定日付の ±days 日・同額（絶対値）の MF 取引を返す。
-        / Return MF transactions within ±days of date with matching absolute amount."""
+        """Return MF spending transactions within ±days of date with matching absolute amount.
+        Spending rows have amount < 0 in MoneyForward; income rows (amount > 0) are excluded."""
         try:
             base_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
         except (ValueError, TypeError):
@@ -257,6 +281,7 @@ class ExpenseManager:
                     SELECT * FROM moneyforward_transactions
                     WHERE date BETWEEN ? AND ?
                       AND ABS(amount) = ?
+                      AND amount < 0
                       AND matched_expense_id IS NULL
                       AND is_transfer = 0
                       AND is_calculation_target = 1
@@ -268,6 +293,41 @@ class ExpenseManager:
                 return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"MF candidate fetch error: {e}")
+            return []
+
+    async def _get_mf_candidates_amount_only(
+        self, abs_amount: int, exclude_mf_ids: set[str] | None = None
+    ) -> list[dict]:
+        """Return MF spending transactions matching the absolute amount with no date constraint.
+        Used for "uncertain" confidence matches where only the amount aligns.
+        Excludes mf_ids already found by _get_mf_candidates_in_range to avoid duplicates."""
+        if exclude_mf_ids is None:
+            exclude_mf_ids = set()
+
+        try:
+            import aiosqlite
+            async with aiosqlite.connect(self._db._db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM moneyforward_transactions
+                    WHERE ABS(amount) = ?
+                      AND amount < 0
+                      AND matched_expense_id IS NULL
+                      AND is_transfer = 0
+                      AND is_calculation_target = 1
+                    ORDER BY date DESC
+                    LIMIT 10
+                    """,
+                    (abs_amount,),
+                )
+                rows = await cursor.fetchall()
+                return [
+                    dict(row) for row in rows
+                    if row["mf_id"] not in exclude_mf_ids
+                ]
+        except Exception as e:
+            logger.error(f"MF amount-only candidate fetch error: {e}")
             return []
 
     def rule_based_categorize(
@@ -475,8 +535,8 @@ class ExpenseManager:
         return ("雑費", None)
 
     async def _gemini_similarity_check(self, content_a: str, content_b: str) -> bool:
-        """Gemini で2つの店名・内容が同一取引か判定する。
-        / Use Gemini to check if two descriptions refer to the same transaction."""
+        """Use Gemini to check if two store names / descriptions refer to the same transaction.
+        Returns True if Gemini answers "yes", False otherwise or on any error."""
         if not content_a or not content_b:
             return False
 
@@ -487,16 +547,17 @@ class ExpenseManager:
         )
 
         try:
-            # gemini_client は dict。_call_model 相当の処理を直接実行する
             client = self._gemini.get("client")
             model = self._gemini.get("model", "gemini-2.5-flash")
             if client is None:
                 return False
-            response = client.models.generate_content(model=model, contents=prompt)
+            response = await asyncio.to_thread(
+                client.models.generate_content, model=model, contents=prompt
+            )
             answer = response.text.strip().lower()
             return "yes" in answer
         except Exception as e:
-            logger.warning(f"Gemini 類似判定失敗: {e}")
+            logger.warning(f"Gemini similarity check failed: {e}")
             return False
 
 
